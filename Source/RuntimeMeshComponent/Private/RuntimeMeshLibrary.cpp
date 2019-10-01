@@ -683,7 +683,7 @@ void URuntimeMeshLibrary::GetStaticMeshSection(UStaticMesh* InMesh, int32 LODInd
 
 				// Lets copy the adjacency information too for tessellation 
 				// At this point all vertices should be copied so it should work to just copy/convert the indices.
-				if (LOD.bHasAdjacencyInfo && LOD.AdjacencyIndexBuffer.GetNumIndices() > 0)
+				/*if (LOD.bHasAdjacencyInfo && LOD.AdjacencyIndexBuffer.GetNumIndices() > 0)
 				{
 					FIndexArrayView AdjacencyIndices = LOD.AdjacencyIndexBuffer.GetArrayView();
 
@@ -695,7 +695,7 @@ void URuntimeMeshLibrary::GetStaticMeshSection(UStaticMesh* InMesh, int32 LODInd
 					{
 						AdjacencyIndexCreator(MeshToSectionVertMap[AdjacencyIndices[Index]]);
 					}
-				}
+				}*/
 			}
 		}
 	}

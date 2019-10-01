@@ -489,7 +489,8 @@ FReply FRuntimeMeshComponentDetails::ClickedOnConvertToStaticMesh()
 				StaticMesh->LightingGuid = FGuid::NewGuid();
 
 				// Add source to new StaticMesh
-				FStaticMeshSourceModel* SrcModel = new (StaticMesh->GetSourceModel(0)) FStaticMeshSourceModel();
+
+				FStaticMeshSourceModel* SrcModel = &StaticMesh->GetSourceModel(0);
 				SrcModel->BuildSettings.bRecomputeNormals = false;
 				SrcModel->BuildSettings.bRecomputeTangents = false;
 				SrcModel->BuildSettings.bRemoveDegenerates = false;
@@ -507,10 +508,10 @@ FReply FRuntimeMeshComponentDetails::ClickedOnConvertToStaticMesh()
 				// Set up the SectionInfoMap to enable collision
 				for (int32 SectionIdx = 0; SectionIdx < NumMaterials; SectionIdx++)
 				{
-					FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap.Get(0, SectionIdx);
+					FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap().Get(0, SectionIdx);
 					Info.MaterialIndex = SectionIdx;
 					Info.bEnableCollision = true;
-					StaticMesh->GetSectionInfoMap.Set(0, SectionIdx, Info);
+					StaticMesh->GetSectionInfoMap().Set(0, SectionIdx, Info);
 				}
 
 				// Configure body setup for working collision.

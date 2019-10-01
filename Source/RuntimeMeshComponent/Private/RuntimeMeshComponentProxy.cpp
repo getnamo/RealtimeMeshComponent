@@ -6,7 +6,7 @@
 #include "RuntimeMeshProxy.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "TessellationRendering.h"
-#include "PrimitiveSceneProxy.h"
+#include "Runtime/Engine/Public/PrimitiveSceneProxy.h"
 #include "Materials/Material.h"
 
 FRuntimeMeshComponentSceneProxy::FRuntimeMeshComponentSceneProxy(URuntimeMeshComponent* Component) 
@@ -164,7 +164,8 @@ void FRuntimeMeshComponentSceneProxy::GetDynamicMeshElements(const TArray<const 
 			if (ViewFamily.EngineShowFlags.Collision && IsCollisionEnabled() && BodySetup && BodySetup->GetCollisionTraceFlag() != ECollisionTraceFlag::CTF_UseComplexAsSimple)
 			{
 				FTransform GeomTransform(GetLocalToWorld());
-				BodySetup->AggGeom.GetAggGeom(GeomTransform, GetSelectionColor(FColor(157, 149, 223, 255), IsSelected(), IsHovered()).ToFColor(true), NULL, false, false, UseEditorDepthTest(), ViewIndex, Collector);
+				bool bDrawsVelocity = false;
+				BodySetup->AggGeom.GetAggGeom(GeomTransform, GetSelectionColor(FColor(157, 149, 223, 255), IsSelected(), IsHovered()).ToFColor(true), NULL, false, false, bDrawsVelocity, ViewIndex, Collector);
 			}
 
 			// Render bounds
