@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Engine/Engine.h"
+#include "Runtime/Engine/Classes/Interfaces/Interface_CollisionDataProvider.h"
 #include "RuntimeMeshCore.h"
 #include "RuntimeMeshBuilder.h"
 
