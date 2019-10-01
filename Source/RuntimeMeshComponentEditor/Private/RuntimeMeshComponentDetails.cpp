@@ -15,6 +15,8 @@
 
 #include "Input/SCheckBox.h"
 #include "Input/SComboBox.h"
+#include "Input/SButton.h"
+#include "Engine/StaticMesh.h"
 
 #define LOCTEXT_NAMESPACE "RuntimeMeshComponentDetails"
 
@@ -487,7 +489,7 @@ FReply FRuntimeMeshComponentDetails::ClickedOnConvertToStaticMesh()
 				StaticMesh->LightingGuid = FGuid::NewGuid();
 
 				// Add source to new StaticMesh
-				FStaticMeshSourceModel* SrcModel = new (StaticMesh->SourceModels) FStaticMeshSourceModel();
+				FStaticMeshSourceModel* SrcModel = new (StaticMesh->GetSourceModel(0)) FStaticMeshSourceModel();
 				SrcModel->BuildSettings.bRecomputeNormals = false;
 				SrcModel->BuildSettings.bRecomputeTangents = false;
 				SrcModel->BuildSettings.bRemoveDegenerates = false;
@@ -505,10 +507,10 @@ FReply FRuntimeMeshComponentDetails::ClickedOnConvertToStaticMesh()
 				// Set up the SectionInfoMap to enable collision
 				for (int32 SectionIdx = 0; SectionIdx < NumMaterials; SectionIdx++)
 				{
-					FMeshSectionInfo Info = StaticMesh->SectionInfoMap.Get(0, SectionIdx);
+					FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap.Get(0, SectionIdx);
 					Info.MaterialIndex = SectionIdx;
 					Info.bEnableCollision = true;
-					StaticMesh->SectionInfoMap.Set(0, SectionIdx, Info);
+					StaticMesh->GetSectionInfoMap.Set(0, SectionIdx, Info);
 				}
 
 				// Configure body setup for working collision.

@@ -4,7 +4,7 @@
 #include "RuntimeMeshComponentPlugin.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "PhysicsEngine/PhysicsSettings.h"
-#include "Physics/IPhysXCookingModule.h"
+#include "PhysicsCore/Public/IPhysXCookingModule.h"
 #include "RuntimeMeshCore.h"
 #include "RuntimeMeshGenericVertex.h"
 #include "RuntimeMeshUpdateCommands.h"
@@ -16,11 +16,7 @@
 #include "NavigationSystem.h"
 
 
-
 DECLARE_CYCLE_STAT(TEXT("RMC - New Collision Data Recieved"), STAT_RuntimeMeshComponent_NewCollisionMeshReceived, STATGROUP_RuntimeMesh);
-
-
-
 
 
 URuntimeMeshComponent::URuntimeMeshComponent(const FObjectInitializer& ObjectInitializer)

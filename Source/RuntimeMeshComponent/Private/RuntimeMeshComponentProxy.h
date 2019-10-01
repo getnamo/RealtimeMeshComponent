@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "RuntimeMeshData.h"
 #include "RuntimeMeshSectionProxy.h"
+#include "PrimitiveSceneProxy.h"
 
 class UBodySetup;
 class URuntimeMeshComponent;
