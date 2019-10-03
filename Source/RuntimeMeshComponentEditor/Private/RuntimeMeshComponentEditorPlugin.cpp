@@ -45,7 +45,7 @@ IMPLEMENT_MODULE(FRuntimeMeshComponentEditorPlugin, RuntimeMeshComponentEditor)
 
 void FRuntimeMeshComponentEditorPlugin::StartupModule()
 {
-	{
+	/*{
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.RegisterCustomClassLayout(URuntimeMeshComponent::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FRuntimeMeshComponentDetails::MakeInstance));
 	}
@@ -88,14 +88,14 @@ void FRuntimeMeshComponentEditorPlugin::StartupModule()
 		TSharedPtr<FExtender> MenuExtender = MakeShareable(new FExtender());
 		MenuExtender->AddMenuBarExtension("Window", EExtensionHook::After, PluginCommands, FMenuBarExtensionDelegate::CreateRaw(this, &FRuntimeMeshComponentEditorPlugin::AddMenuBarExtension));
 		LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(MenuExtender);
-	}
+	}*/
 }
 
 void FRuntimeMeshComponentEditorPlugin::ShutdownModule()
 {
-	FRuntimeMeshComponentEditorStyle::Shutdown();
+	/*FRuntimeMeshComponentEditorStyle::Shutdown();
 
-	FRuntimeMeshComponentEditorCommands::Unregister();
+	FRuntimeMeshComponentEditorCommands::Unregister();*/
 }
 
 void FRuntimeMeshComponentEditorPlugin::DonateActionClicked()
