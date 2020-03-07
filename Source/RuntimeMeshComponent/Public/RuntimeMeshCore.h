@@ -4,7 +4,7 @@
 
 #include "Engine/Engine.h"
 #include "Components/MeshComponent.h"
-#include "Runtime/Launch/Resources/Version.h"
+#include "Launch/Resources/Version.h"
 #include "Stats/Stats.h"
 #include "HAL/CriticalSection.h"
 #include "RuntimeMeshCore.generated.h"

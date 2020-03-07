@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Runtime/Engine/Public/Tickable.h"
+#include "Engine/Public/Tickable.h"
 #include "RuntimeMeshCore.h"
 #include "RuntimeMeshSection.h"
 #include "RuntimeMeshData.h"
