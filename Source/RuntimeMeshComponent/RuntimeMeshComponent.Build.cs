@@ -9,13 +9,8 @@ public class RuntimeMeshComponent : ModuleRules
     {
         bEnforceIWYU = true;
         bLegacyPublicIncludePaths = false;
-
-#if UE_4_23_OR_LATER
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-#endif
-#if UE_4_24_OR_LATER
-#else
-#endif
+
 
         // Setup the pro/community definitions
         PublicDefinitions.Add("RUNTIMEMESHCOMPONENT_PRO=0");
@@ -39,12 +34,8 @@ public class RuntimeMeshComponent : ModuleRules
                 "RenderCore",
                 "RHI",
                 "NavigationSystem",
-#if UE_4_23_OR_LATER
                 "PhysicsCore",
-#endif
-#if UE_4_26_OR_LATER
-				"DeveloperSettings",
-#endif		
+				"DeveloperSettings",		
             }
             );
     }
