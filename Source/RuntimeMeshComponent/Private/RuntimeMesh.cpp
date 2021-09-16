@@ -730,10 +730,10 @@ void URuntimeMesh::HandleUpdate()
 						SectionsToGetMesh.FindOrAdd(LODId).Add(INDEX_NONE);
 						continue;
 					}
-
-					if (LODs[LODId].Sections.Contains(SectionId))
+					
+					if (EnumHasAnyFlags(UpdateType, ESectionUpdateType::AllData))
 					{
-						if (EnumHasAnyFlags(UpdateType, ESectionUpdateType::AllData))
+						if (LODs[LODId].Sections.Contains(SectionId))
 						{
 							if (EnumHasAllFlags(UpdateType, ESectionUpdateType::Properties))
 							{
@@ -746,16 +746,16 @@ void URuntimeMesh::HandleUpdate()
 								SectionsToGetMesh.FindOrAdd(LODId).Add(SectionId);
 							}
 						}
-						else
+					}
+					else
+					{
+						if (EnumHasAllFlags(UpdateType, ESectionUpdateType::Remove))
 						{
-							if (EnumHasAllFlags(UpdateType, ESectionUpdateType::Remove))
-							{
-								RenderProxyRef->RemoveSection_GameThread(LODId, SectionId);
-							}
-							else if (EnumHasAllFlags(UpdateType, ESectionUpdateType::Clear))
-							{
-								RenderProxyRef->ClearSection_GameThread(LODId, SectionId);
-							}
+							RenderProxyRef->RemoveSection_GameThread(LODId, SectionId);
+						}
+						else if (EnumHasAllFlags(UpdateType, ESectionUpdateType::Clear))
+						{
+							RenderProxyRef->ClearSection_GameThread(LODId, SectionId);
 						}
 					}
 				}
@@ -923,12 +923,19 @@ void URuntimeMesh::UpdateCollision(bool bForceCookNow)
 	SCOPE_CYCLE_COUNTER(STAT_RuntimeMesh_UpdateCollision);
 
 	check(IsInGameThread());
-
-	FReadScopeLock Lock(MeshProviderLock);
-	if (MeshProviderPtr)
+	bool HasCollisionSettings = false;
+	FRuntimeMeshCollisionSettings CollisionSettings;
 	{
-		FRuntimeMeshCollisionSettings CollisionSettings = MeshProviderPtr->GetCollisionSettings();
-
+		FReadScopeLock Lock(MeshProviderLock);
+		if (MeshProviderPtr)
+		{
+			CollisionSettings = MeshProviderPtr->GetCollisionSettings();
+			HasCollisionSettings = true;
+		}
+	}
+	
+	if (HasCollisionSettings)
+	{
 		UWorld* World = GetWorld();
 		const bool bShouldCookAsync = !bForceCookNow && World && World->IsGameWorld() && CollisionSettings.bUseAsyncCooking;
 
@@ -1078,7 +1085,14 @@ void URuntimeMesh::FinalizeNewCookedData()
 	SCOPE_CYCLE_COUNTER(STAT_RuntimeMesh_FinalizeCollisionCookedData);
 
 	check(IsInGameThread());
-
+	
+	{
+		FWriteScopeLock Lock(MeshProviderLock);
+		if (MeshProviderPtr)
+		{
+			MeshProviderPtr->CollisionUpdateCompleted();
+		}
+	}
 	// Alert all linked components so they can update their physics state.
 	DoForAllLinkedComponents([](URuntimeMeshComponent* Mesh)
 		{
