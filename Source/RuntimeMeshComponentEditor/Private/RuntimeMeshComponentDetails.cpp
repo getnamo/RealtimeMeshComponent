@@ -220,7 +220,7 @@ FReply FRuntimeMeshComponentDetails::ClickedOnConvertToStaticMesh()
 							int32 VertexIndex = MeshData.Triangles.GetVertexIndex(Index);
 							RawMesh.WedgeIndices.Add(VertexIndex + VertexBase);
 
-							FVector TangentX, TangentY, TangentZ;
+							FVector3f TangentX, TangentY, TangentZ;
 							MeshData.Tangents.GetTangents(VertexIndex, TangentX, TangentY, TangentZ);
 							RawMesh.WedgeTangentX.Add(TangentX);
 							RawMesh.WedgeTangentY.Add(TangentY);
@@ -228,7 +228,7 @@ FReply FRuntimeMeshComponentDetails::ClickedOnConvertToStaticMesh()
 
 							for (int32 UVIndex = 0; UVIndex < Section.NumTexCoords; UVIndex++)
 							{
-								RawMesh.WedgeTexCoords[UVIndex].Add(MeshData.TexCoords.GetTexCoord(VertexIndex, UVIndex));
+								RawMesh.WedgeTexCoords[UVIndex].Add((FVector2f)MeshData.TexCoords.GetTexCoord(VertexIndex, UVIndex));
 							}
 
 							RawMesh.WedgeColors.Add(MeshData.Colors.GetColor(VertexIndex));
