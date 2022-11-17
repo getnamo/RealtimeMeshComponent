@@ -60,7 +60,7 @@ void URuntimeMeshModifierAdjacency::AddIfLeastUV(PositionDictionary& PosDict, co
 	{
 		PosDict.Add(FVector(Vert.Position), Corner(Index, Vert.TexCoord));
 	}
-	else if (Vert.TexCoord < Pos->TexCoord)
+	else if (Vert.TexCoord.ComponentwiseAllLessThan(Pos->TexCoord))
 	{
 		PosDict[FVector(Vert.Position)] = Corner(Index, Vert.TexCoord);
 	}
