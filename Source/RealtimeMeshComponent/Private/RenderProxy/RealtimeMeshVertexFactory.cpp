@@ -10,6 +10,7 @@
 #include "SpeedTreeWind.h"
 #include "Rendering/ColorVertexBuffer.h"
 #include "MeshMaterialShader.h"
+#include "MeshDrawShaderBindings.h"
 #include "Data/RealtimeMeshConfig.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 

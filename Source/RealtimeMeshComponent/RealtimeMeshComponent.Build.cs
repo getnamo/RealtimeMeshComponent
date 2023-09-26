@@ -7,7 +7,6 @@ public class RealtimeMeshComponent : ModuleRules
 {
     public RealtimeMeshComponent(ReadOnlyTargetRules rules) : base(rules)
     {
-        bEnforceIWYU = true;
         bLegacyPublicIncludePaths = false;
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
