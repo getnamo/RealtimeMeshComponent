@@ -4,6 +4,9 @@
 #include "RealtimeMeshComponent.h"
 #include "RealtimeMeshEngineSubsystem.h"
 #include "Engine/CollisionProfile.h"
+#if RMC_ENGINE_ABOVE_5_2
+#include "Engine/Level.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "ARealtimeMeshActor"
 
@@ -19,7 +22,7 @@ ARealtimeMeshActor::ARealtimeMeshActor()
 
 	SetRootComponent(RealtimeMeshComponent);
 
-#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION == 0
+#if RMC_ENGINE_BELOW_5_1
 	RegisterWithGenerationManager();
 #endif
 }
@@ -41,8 +44,8 @@ void ARealtimeMeshActor::OnConstruction(const FTransform& Transform)
 void ARealtimeMeshActor::PostLoad()
 {
 	Super::PostLoad();
-	
-#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 1
+
+#if RMC_ENGINE_ABOVE_5_1
 	RegisterWithGenerationManager();
 #endif
 }
@@ -50,7 +53,7 @@ void ARealtimeMeshActor::PostLoad()
 void ARealtimeMeshActor::PostActorCreated()
 {
 	Super::PostActorCreated();
-#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 1
+#if RMC_ENGINE_ABOVE_5_1
 	RegisterWithGenerationManager();
 #endif
 }
@@ -62,7 +65,6 @@ void ARealtimeMeshActor::Destroyed()
 }
 
 
-
 void ARealtimeMeshActor::PreRegisterAllComponents()
 {
 	Super::PreRegisterAllComponents();
@@ -70,7 +72,7 @@ void ARealtimeMeshActor::PreRegisterAllComponents()
 	// Handle UWorld::AddToWorld() to catch ULevel visibility toggles
 	if (GetLevel() && GetLevel()->bIsAssociatingLevel)
 	{
-		RegisterWithGenerationManager();		
+		RegisterWithGenerationManager();
 	}
 }
 
@@ -79,9 +81,9 @@ void ARealtimeMeshActor::PostUnregisterAllComponents()
 	// Handle UWorld::RemoveFromWorld() to catch ULevel visibility toggles
 	if (GetLevel() && GetLevel()->bIsDisassociatingLevel)
 	{
-		UnregisterWithGenerationManager();		
+		UnregisterWithGenerationManager();
 	}
-	
+
 	Super::PostUnregisterAllComponents();
 }
 
@@ -96,7 +98,7 @@ void ARealtimeMeshActor::PostEditUndo()
 	// Currently (5.1) the checks below will tell us if the undo/redo has destroyed the
 	// Actor, and we assume otherwise it was created
 
-	if (IsActorBeingDestroyed() || !IsValid(this))	// equivalent to AActor::IsPendingKillPending()
+	if (IsActorBeingDestroyed() || !IsValid(this)) // equivalent to AActor::IsPendingKillPending()
 	{
 		UnregisterWithGenerationManager();
 	}
@@ -107,7 +109,6 @@ void ARealtimeMeshActor::PostEditUndo()
 }
 
 #endif
-
 
 
 void ARealtimeMeshActor::RegisterWithGenerationManager()
@@ -163,8 +164,6 @@ void ARealtimeMeshActor::ExecuteRebuildGeneratedMeshIfPending()
 
 	bGeneratedMeshRebuildPending = false;
 }
-
-
 
 
 #undef LOCTEXT_NAMESPACE
