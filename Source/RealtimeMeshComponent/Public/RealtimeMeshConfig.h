@@ -123,6 +123,42 @@ public:
 	}
 };
 
+/**
+*	Struct used to specify a tangent vector for a vertex
+*	The Y tangent is computed from the cross product of the vertex normal (Tangent Z) and the TangentX member.
+*/
+USTRUCT(BlueprintType)
+struct REALTIMEMESHCOMPONENT_API FRealtimeMeshTangent
+{
+	GENERATED_BODY()
+public:
+	/** Direction of X tangent for this vertex */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="RealtimeMesh|Tangent")
+	FVector TangentX;
+	/** Bool that indicates whether we should flip the Y tangent when we compute it using cross product */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="RealtimeMesh|Tangent")
+	bool bFlipTangentY;
+	FRealtimeMeshTangent()
+		: TangentX(FVector::XAxisVector)
+		, bFlipTangentY(false)
+	{}
+	FRealtimeMeshTangent(float X, float Y, float Z)
+		: TangentX(X, Y, Z)
+		, bFlipTangentY(false)
+	{}
+	FRealtimeMeshTangent(FVector InTangentX, bool bInFlipTangentY)
+		: TangentX(InTangentX)
+		, bFlipTangentY(bInFlipTangentY)
+	{}
+	FRealtimeMeshTangent(FVector InTangentX, FVector InTangentY, FVector InTangentZ)
+		: TangentX(InTangentX)
+		, bFlipTangentY(GetBasisDeterminantSign(InTangentX, InTangentY, InTangentZ) < 0)
+	{}
+	
+	friend FArchive& operator<<(FArchive& Ar, FRealtimeMeshTangent& Tangent);
+};
+
+
 /* The rendering path to use for this section.
  * Static has lower overhead but requires a proxy recreation on change for all components
  * Dynamic has slightly higher overhead but allows for more efficient section updates
