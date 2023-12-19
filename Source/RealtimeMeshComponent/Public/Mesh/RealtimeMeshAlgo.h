@@ -101,8 +101,11 @@ namespace RealtimeMeshAlgo
 	 * @param PolygonGroupIndices 
 	 * @return 
 	 */
+
+	//TEnableIf<!std::is_same<PolygonGroupType, FRealtimeMeshPolygonGroupRange>::Value, bool>::Type
+
 	template <typename PolygonGroupType>
-	typename TEnableIf<!std::is_same<PolygonGroupType, FRealtimeMeshPolygonGroupRange>::Value, bool>::Type ArePolygonGroupIndicesOptimal(
+	typename bool ArePolygonGroupIndicesOptimal(
 		const TConstArrayView<PolygonGroupType>& PolygonGroupIndices)
 	{
 		TSet<PolygonGroupType> UniquePolygonGroupIndices;
