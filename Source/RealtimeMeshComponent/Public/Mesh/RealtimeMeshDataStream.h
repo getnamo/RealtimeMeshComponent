@@ -6,6 +6,7 @@
 #include "RealtimeMeshConfig.h"
 #include "RealtimeMeshDataTypes.h"
 #include "RealtimeMeshDataConversion.h"
+#include "Templates/MakeUnsigned.h"
 
 #if RMC_ENGINE_BELOW_5_1
 // Included for TMakeUnsigned in 5.0
