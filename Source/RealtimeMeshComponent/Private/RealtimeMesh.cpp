@@ -33,12 +33,64 @@ URealtimeMesh::URealtimeMesh(const FObjectInitializer& ObjectInitializer)
 	, PendingBodySetup(nullptr)
 	, CollisionUpdateVersionCounter(0)
 	, CurrentCollisionVersion(INDEX_NONE)
+{	
+}
+
+void URealtimeMesh::BroadcastBoundsChangedEvent()
 {
+	if (!IsInGameThread())
+	{
+		TWeakObjectPtr<URealtimeMesh> WeakThis(this);
+		AsyncTask(ENamedThreads::GameThread, [WeakThis]()
+		{
+			if (const auto Mesh = WeakThis.Get())
+			{
+				Mesh->BoundsChangedEvent.Broadcast(Mesh);
+			}
+		});
+	}
+	else
+	{
+		BoundsChangedEvent.Broadcast(this);
+	}
+}
+
+void URealtimeMesh::BroadcastRenderDataChangedEvent(bool bShouldRecreateProxies)
+{
+	if (!IsInGameThread())
+	{
+		TWeakObjectPtr<URealtimeMesh> WeakThis(this);
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, bShouldRecreateProxies]()
+		{
+			if (const auto Mesh = WeakThis.Get())
+			{
+				Mesh->RenderDataChangedEvent.Broadcast(Mesh, bShouldRecreateProxies);
+			}
+		});
+	}
+	else
+	{
+		RenderDataChangedEvent.Broadcast(this, bShouldRecreateProxies);
+	}
 }
 
 void URealtimeMesh::BroadcastCollisionBodyUpdatedEvent(UBodySetup* NewBodySetup)
 {
-	CollisionBodyUpdatedEvent.Broadcast(this, NewBodySetup);
+	if (!IsInGameThread())
+	{
+		TWeakObjectPtr<URealtimeMesh> WeakThis(this);
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, NewBodySetup]()
+		{
+			if (const auto Mesh = WeakThis.Get())
+			{
+				Mesh->CollisionBodyUpdatedEvent.Broadcast(Mesh, NewBodySetup);
+			}
+		});
+	}
+	else
+	{
+		CollisionBodyUpdatedEvent.Broadcast(this, NewBodySetup);
+	}
 }
 
 void URealtimeMesh::Initialize(const TSharedRef<RealtimeMesh::FRealtimeMeshSharedResources>& InSharedResources)
@@ -58,12 +110,14 @@ void URealtimeMesh::Initialize(const TSharedRef<RealtimeMesh::FRealtimeMeshShare
 	SharedResources->GetCollisionUpdateHandler() = RealtimeMesh::FRealtimeMeshCollisionUpdateDelegate::CreateUObject(this, &URealtimeMesh::InitiateCollisionUpdate);
 
 	MeshRef = SharedResources->CreateRealtimeMesh();
-	SharedResources->SetOwnerMesh(MeshRef.ToSharedRef());
+	SharedResources->SetOwnerMesh(this, MeshRef.ToSharedRef());
 }
 
 
 void URealtimeMesh::Reset(bool bCreateNewMeshData)
 {
+	RealtimeMesh::FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
+	
 	UE_LOG(LogTemp, Warning, TEXT("RM Resetting... %s"), *GetName());
 	if (!bCreateNewMeshData)
 	{
@@ -74,7 +128,15 @@ void URealtimeMesh::Reset(bool bCreateNewMeshData)
 		Initialize(SharedResources->CreateSharedResources());
 	}
 
+	MaterialSlots.Empty();
+	SlotNameLookup.Empty();
+	
 	BodySetup = nullptr;
+	PendingCollisionUpdate.Reset();
+	if (PendingBodySetup)
+	{
+		PendingBodySetup->AbortPhysicsMeshAsyncCreation();
+	}
 
 	BroadcastBoundsChangedEvent();
 	BroadcastRenderDataChangedEvent(true);
@@ -114,6 +176,8 @@ void URealtimeMesh::RemoveTrailingLOD()
 
 void URealtimeMesh::SetupMaterialSlot(int32 MaterialSlot, FName SlotName, UMaterialInterface* InMaterial)
 {
+	RealtimeMesh::FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
+	
 	// Does this slot already exist?
 	if (SlotNameLookup.Contains(SlotName))
 	{
@@ -140,27 +204,44 @@ void URealtimeMesh::SetupMaterialSlot(int32 MaterialSlot, FName SlotName, UMater
 
 int32 URealtimeMesh::GetMaterialIndex(FName MaterialSlotName) const
 {
+	RealtimeMesh::FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
+	
 	const int32* SlotIndex = SlotNameLookup.Find(MaterialSlotName);
 	return SlotIndex ? *SlotIndex : INDEX_NONE;
 }
 
+FName URealtimeMesh::GetMaterialSlotName(int32 Index) const
+{
+	RealtimeMesh::FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
+
+	if (MaterialSlots.IsValidIndex(Index))
+	{
+		return MaterialSlots[Index].SlotName;
+	}
+	return NAME_None;	
+}
+
 bool URealtimeMesh::IsMaterialSlotNameValid(FName MaterialSlotName) const
 {
+	RealtimeMesh::FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 	return SlotNameLookup.Contains(MaterialSlotName);
 }
 
 FRealtimeMeshMaterialSlot URealtimeMesh::GetMaterialSlot(int32 SlotIndex) const
 {
+	RealtimeMesh::FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 	return MaterialSlots[SlotIndex];
 }
 
 int32 URealtimeMesh::GetNumMaterials() const
 {
+	RealtimeMesh::FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 	return MaterialSlots.Num();
 }
 
 TArray<FName> URealtimeMesh::GetMaterialSlotNames() const
 {
+	RealtimeMesh::FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 	TArray<FName> OutNames;
 	SlotNameLookup.GetKeys(OutNames);
 	return OutNames;
@@ -168,11 +249,13 @@ TArray<FName> URealtimeMesh::GetMaterialSlotNames() const
 
 TArray<FRealtimeMeshMaterialSlot> URealtimeMesh::GetMaterialSlots() const
 {
+	RealtimeMesh::FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 	return MaterialSlots;
 }
 
 UMaterialInterface* URealtimeMesh::GetMaterial(int32 SlotIndex) const
 {
+	RealtimeMesh::FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 	if (MaterialSlots.IsValidIndex(SlotIndex))
 	{
 		return MaterialSlots[SlotIndex].Material;
@@ -204,7 +287,7 @@ void URealtimeMesh::Serialize(FArchive& Ar)
 		Ar.UsingCustomVersion(RealtimeMesh::FRealtimeMeshVersion::GUID);
 
 		// Serialize the mesh data
-		GetMesh()->Serialize(Ar);
+		GetMesh()->Serialize(Ar, this);
 	}
 }
 
@@ -245,6 +328,35 @@ bool URealtimeMesh::ContainsPhysicsTriMeshData(bool InUseAllTriData) const
 	return PendingCollisionUpdate.IsSet() && PendingCollisionUpdate.GetValue().TriMeshData.GetTriangles().Num() > 0;
 }
 
+struct FRealtimeMeshCookAutoPromiseOnDestruction
+{
+private:
+	
+	TSharedRef<TPromise<ERealtimeMeshCollisionUpdateResult>> Promise;
+	bool bIsSet;
+
+public:
+	FRealtimeMeshCookAutoPromiseOnDestruction(const TSharedRef<TPromise<ERealtimeMeshCollisionUpdateResult>>& InPromise)
+		: Promise(InPromise)
+		, bIsSet(false)
+	{
+	}
+
+	~FRealtimeMeshCookAutoPromiseOnDestruction()
+	{
+		if (!bIsSet)
+		{
+			Promise->SetValue(ERealtimeMeshCollisionUpdateResult::Ignored);
+		}
+	}
+
+	void SetResult(ERealtimeMeshCollisionUpdateResult Result)
+	{
+		Promise->SetValue(Result);
+		bIsSet = true;
+	}
+};
+
 void URealtimeMesh::InitiateCollisionUpdate(const TSharedRef<TPromise<ERealtimeMeshCollisionUpdateResult>>& Promise, const TSharedRef<FRealtimeMeshCollisionData>& CollisionUpdate,
                                             bool bForceSyncUpdate)
 {
@@ -276,16 +388,18 @@ void URealtimeMesh::InitiateCollisionUpdate(const TSharedRef<TPromise<ERealtimeM
 		// Copy source info and reset pending
 		PendingBodySetup = NewBodySetup;
 
+		auto ProtectedPromise = MakeShared<FRealtimeMeshCookAutoPromiseOnDestruction>(Promise);
+		
 		// Kick the cook off asynchronously
 		NewBodySetup->CreatePhysicsMeshesAsync(
-			FOnAsyncPhysicsCookFinished::CreateUObject(this, &URealtimeMesh::FinishPhysicsAsyncCook, Promise, NewBodySetup, UpdateKey));
+			FOnAsyncPhysicsCookFinished::CreateUObject(this, &URealtimeMesh::FinishPhysicsAsyncCook, ProtectedPromise, NewBodySetup, UpdateKey));
 	}
 	else
 	{
 		// Update meshes
 		NewBodySetup->bHasCookedCollisionData = true;
 		NewBodySetup->InvalidatePhysicsData();
-		NewBodySetup->CreatePhysicsMeshes();
+		//NewBodySetup->CreatePhysicsMeshes();
 
 		BodySetup = NewBodySetup;
 		PendingCollisionUpdate.Reset();
@@ -297,7 +411,7 @@ void URealtimeMesh::InitiateCollisionUpdate(const TSharedRef<TPromise<ERealtimeM
 }
 
 // ReSharper disable once CppPassValueParameterByConstReference
-void URealtimeMesh::FinishPhysicsAsyncCook(bool bSuccess, TSharedRef<TPromise<ERealtimeMeshCollisionUpdateResult>> Promise, UBodySetup* FinishedBodySetup, int32 UpdateKey)
+void URealtimeMesh::FinishPhysicsAsyncCook(bool bSuccess, TSharedRef<FRealtimeMeshCookAutoPromiseOnDestruction> Promise, UBodySetup* FinishedBodySetup, int32 UpdateKey)
 {
 	check(IsInGameThread());
 	check(SharedResources && MeshRef);
@@ -313,18 +427,18 @@ void URealtimeMesh::FinishPhysicsAsyncCook(bool bSuccess, TSharedRef<TPromise<ER
 		{
 			BodySetup = FinishedBodySetup;
 			CurrentCollisionVersion = UpdateKey;
-			Promise->SetValue(ERealtimeMeshCollisionUpdateResult::Updated);
+			Promise->SetResult(ERealtimeMeshCollisionUpdateResult::Updated);
 			bSendEvent = true;
 		}
 		else
 		{
-			Promise->SetValue(ERealtimeMeshCollisionUpdateResult::Ignored);
+			Promise->SetResult(ERealtimeMeshCollisionUpdateResult::Ignored);
 		}
 	}
 	else
 	{
 		CurrentCollisionVersion = UpdateKey;
-		Promise->SetValue(ERealtimeMeshCollisionUpdateResult::Error);
+		Promise->SetResult(ERealtimeMeshCollisionUpdateResult::Error);
 	}
 
 	if (PendingBodySetup == FinishedBodySetup)
@@ -346,10 +460,10 @@ void URealtimeMesh::HandleBoundsUpdated()
 	BroadcastBoundsChangedEvent();
 }
 
-void URealtimeMesh::HandleMeshRenderingDataChanged()
+void URealtimeMesh::HandleMeshRenderingDataChanged(bool bShouldRecreateProxies)
 {
 	Modify(true);
-	BroadcastRenderDataChangedEvent(true);
+	BroadcastRenderDataChangedEvent(bShouldRecreateProxies);
 }
 
 

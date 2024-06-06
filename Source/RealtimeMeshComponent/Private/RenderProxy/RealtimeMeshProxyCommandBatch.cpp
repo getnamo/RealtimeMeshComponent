@@ -1,9 +1,9 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+// Copyright TriAxis Games, L.L.C. All Rights Reserved.
 
 
+#include "RenderProxy/RealtimeMeshProxyCommandBatch.h"
 #include "Data/RealtimeMeshShared.h"
 #include "Data/RealtimeMeshData.h"
-#include "RenderProxy/RealtimeMeshProxyCommandBatch.h"
 #include "RenderProxy/RealtimeMeshLODProxy.h"
 #include "RenderProxy/RealtimeMeshProxy.h"
 #include "RenderProxy/RealtimeMeshSectionGroupProxy.h"
@@ -21,21 +21,72 @@ namespace RealtimeMesh
 	{
 	}
 
-	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshProxyCommandBatch::Commit()
+
+	struct FRealtimeMeshCommandBatchIntermediateFuture : public TSharedFromThis<FRealtimeMeshCommandBatchIntermediateFuture>
 	{
-		if (!Mesh.IsValid())
+		TSharedRef<TPromise<ERealtimeMeshProxyUpdateStatus>> FinalPromise;
+		ERealtimeMeshProxyUpdateStatus Result;
+		uint8 bRenderThreadReady : 1;
+		uint8 bGameThreadReady : 1;
+		uint8 bFinalized : 1;
+
+		FRealtimeMeshCommandBatchIntermediateFuture()
+			: FinalPromise(MakeShared<TPromise<ERealtimeMeshProxyUpdateStatus>>())
+			  , Result(ERealtimeMeshProxyUpdateStatus::NoUpdate)
+			  , bRenderThreadReady(false)
+			  , bGameThreadReady(false)
+			  , bFinalized(false)
 		{
-			return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoProxy).GetFuture();
 		}
 
+		void FinalizeRenderThread(ERealtimeMeshProxyUpdateStatus Status)
+		{
+			AsyncTask(ENamedThreads::GameThread, [Status, ThisShared = this->AsShared()]()
+			{
+				ThisShared->Result = Status;
+				ThisShared->bRenderThreadReady = true;
+
+				if (!ThisShared->bFinalized)
+				{
+					ThisShared->FinalPromise->EmplaceValue(ThisShared->Result);
+					ThisShared->bFinalized = true;
+				}
+			});
+		}
+
+		void FinalizeGameThread()
+		{
+			bGameThreadReady = true;
+
+			if (bRenderThreadReady && !bFinalized)
+			{
+				FinalPromise->EmplaceValue(Result);
+				bFinalized = true;
+			}
+		}
+	};
+
+
+	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshProxyCommandBatch::Commit()
+	{
+		// Skip if no tasks
 		if (Tasks.IsEmpty())
 		{
 			return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
 		}
 
-		auto Promise = MakeShared<TPromise<ERealtimeMeshProxyUpdateStatus>>();
+		// Skip if no mesh
+		if (!Mesh.IsValid())
+		{
+			return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoProxy).GetFuture();
+		}
 
-		ENQUEUE_RENDER_COMMAND(FRealtimeMeshProxy_Update)([Promise, ProxyWeak = FRealtimeMeshProxyWeakPtr(Mesh->GetRenderProxy(true)), Tasks = MoveTemp(Tasks)](FRHICommandListImmediate&)
+		// Skip if no proxy
+		const FRealtimeMeshProxyPtr Proxy = Mesh->GetRenderProxy(true);
+
+		auto ThreadState = MakeShared<FRealtimeMeshCommandBatchIntermediateFuture>();
+
+		ENQUEUE_RENDER_COMMAND(FRealtimeMeshProxy_Update)([ThreadState, ProxyWeak = FRealtimeMeshProxyWeakPtr(Proxy), Tasks = MoveTemp(Tasks)](FRHICommandListImmediate&)
 		{
 			if (const auto& Proxy = ProxyWeak.Pin())
 			{
@@ -44,17 +95,31 @@ namespace RealtimeMesh
 					Task(*Proxy.Get());
 				}
 				Proxy->UpdatedCachedState(false);
+				ThreadState->FinalizeRenderThread(ERealtimeMeshProxyUpdateStatus::Updated);
 			}
-			Promise->SetValue(ERealtimeMeshProxyUpdateStatus::Updated);
+			else
+			{
+				ThreadState->FinalizeRenderThread(ERealtimeMeshProxyUpdateStatus::NoProxy);
+			}
 		});
 
-		Mesh->MarkRenderStateDirty(bRequiresProxyRecreate);
+		AsyncTask(ENamedThreads::GameThread, [ThreadState, MeshWeak = TWeakPtr<FRealtimeMesh>(Mesh), bRecreateProxies = bRequiresProxyRecreate]()
+		{
+			if (const FRealtimeMeshPtr MeshToMarkDirty = MeshWeak.Pin())
+			{
+				// TODO: We probably shouldn't always have to do this
+				MeshToMarkDirty->MarkRenderStateDirty(bRecreateProxies);
+			}
+
+			ThreadState->FinalizeGameThread();
+		});
 
 		Tasks.Empty();
 		bRequiresProxyRecreate = false;
 
-		return Promise->GetFuture();
+		return ThreadState->FinalPromise->GetFuture();
 	}
+
 
 	void FRealtimeMeshProxyCommandBatch::AddMeshTask(TUniqueFunction<void(FRealtimeMeshProxy&)>&& Function, bool bInRequiresProxyRecreate)
 	{

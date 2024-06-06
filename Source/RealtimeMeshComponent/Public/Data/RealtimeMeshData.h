@@ -7,7 +7,10 @@
 #include "RealtimeMeshCollision.h"
 #include "Data/RealtimeMeshShared.h"
 #include "Async/Async.h"
+#include "Mesh/RealtimeMeshCardRepresentation.h"
+#include "Mesh/RealtimeMeshDistanceField.h"
 
+struct IRealtimeMeshNaniteResources;
 struct FTriMeshCollisionData;
 class URealtimeMesh;
 
@@ -26,41 +29,16 @@ namespace RealtimeMesh
 		FRealtimeMeshConfig Config;
 		FRealtimeMeshBounds Bounds;
 
-		//FRealtimeMeshCollisionConfiguration CollisionConfig;
-		//FRealtimeMeshSimpleGeometry SimpleGeometry;
-
-		// Name of the mesh, given by the parent URealtimeMesh for debug messaging.
-		/*FName MeshName;*/
-
-		//bool bIsCollisionDirty;
-
-		/*mutable FRealtimeMeshGuard Guard;*/
-
-		/*mutable FRWLock RenderDataLock;
-		mutable FRWLock CollisionLock;
-		mutable FRWLock BoundsLock;*/
-
-		/*FName TypeName;*/
+		TSharedPtr<IRealtimeMeshNaniteResources> NaniteResources;
 	public:
 		FRealtimeMesh(const FRealtimeMeshSharedResourcesRef& InSharedResources);
 		virtual ~FRealtimeMesh() = default;
 
 		const FRealtimeMeshSharedResourcesRef& GetSharedResources() const { return SharedResources; }
 
-		/*FName GetMeshName() const { return MeshName; }*/
-		/*void SetMeshName(FName InMeshName) { MeshName = InMeshName; }*/
-
 		int32 GetNumLODs() const;
 
 		virtual FBoxSphereBounds3f GetLocalBounds() const;
-		//bool IsCollisionDirty() const { return bIsCollisionDirty; }
-		//void ClearCollisionDirtyFlag() { bIsCollisionDirty = false; }
-
-
-		/*FRealtimeMeshCollisionConfiguration GetCollisionConfig() const;
-		void SetCollisionConfig(const FRealtimeMeshCollisionConfiguration& InCollisionConfig);
-		FRealtimeMeshSimpleGeometry GetSimpleGeometry() const;
-		void SetSimpleGeometry(const FRealtimeMeshSimpleGeometry& InSimpleGeometry);*/
 
 		FRealtimeMeshLODDataPtr GetLOD(FRealtimeMeshLODKey LODKey) const;
 
@@ -90,18 +68,31 @@ namespace RealtimeMesh
 		TFuture<ERealtimeMeshProxyUpdateStatus> RemoveTrailingLOD(FRealtimeMeshLODKey* OutNewLastLODKey = nullptr);
 		virtual void RemoveTrailingLOD(FRealtimeMeshProxyCommandBatch& Commands, FRealtimeMeshLODKey* OutNewLastLODKey = nullptr);
 
+		
+		virtual void SetNaniteResources(FRealtimeMeshProxyCommandBatch& Commands, const TSharedRef<IRealtimeMeshNaniteResources>& InNaniteResources);
+		TFuture<ERealtimeMeshProxyUpdateStatus> SetNaniteResources(const TSharedRef<IRealtimeMeshNaniteResources>& InNaniteResources);
+		virtual void ClearNaniteResources(FRealtimeMeshProxyCommandBatch& Commands);
+		TFuture<ERealtimeMeshProxyUpdateStatus> ClearNaniteResources();
+		
+		virtual void SetDistanceField(FRealtimeMeshProxyCommandBatch& Commands, FRealtimeMeshDistanceField&& InDistanceField);
+		TFuture<ERealtimeMeshProxyUpdateStatus> SetDistanceField(FRealtimeMeshDistanceField&& InDistanceField);
+		virtual void ClearDistanceField(FRealtimeMeshProxyCommandBatch& Commands);
+		TFuture<ERealtimeMeshProxyUpdateStatus> ClearDistanceField();
+
+		virtual void SetCardRepresentation(FRealtimeMeshProxyCommandBatch& Commands, FRealtimeMeshCardRepresentation&& InCardRepresentation);
+		TFuture<ERealtimeMeshProxyUpdateStatus> SetCardRepresentation(FRealtimeMeshCardRepresentation&& InCardRepresentation);
+		
+		virtual void ClearCardRepresentation(FRealtimeMeshProxyCommandBatch& Commands);
+		TFuture<ERealtimeMeshProxyUpdateStatus> ClearCardRepresentation();
+		
 		TFuture<ERealtimeMeshProxyUpdateStatus> Reset(bool bRemoveRenderProxy = false);
 		virtual void Reset(FRealtimeMeshProxyCommandBatch& Commands, bool bRemoveRenderProxy = false);
 
-		virtual bool Serialize(FArchive& Ar);
+		virtual bool Serialize(FArchive& Ar, URealtimeMesh* Owner);
 
 		virtual void MarkRenderStateDirty(bool bShouldRecreateProxies)
 		{
-			SharedResources->BroadcastMeshRenderDataChanged();
-			if (bShouldRecreateProxies)
-			{
-				SharedResources->BroadcastMeshRequestedProxyRecreate();
-			}
+			SharedResources->BroadcastMeshRenderDataChanged(bShouldRecreateProxies);
 		}
 
 		bool HasRenderProxy() const;
@@ -112,7 +103,6 @@ namespace RealtimeMesh
 		virtual void ProcessEndOfFrameUpdates() { }
 	protected:
 
-		/*TFuture<ERealtimeMeshProxyUpdateStatus> ApplyStateUpdate(FRealtimeMeshUpdateContext& Update);*/
 		void HandleLODBoundsChanged(const FRealtimeMeshLODKey& LODKey);
 
 		FRealtimeMeshProxyRef CreateRenderProxy(bool bForceRecreate = false) const;

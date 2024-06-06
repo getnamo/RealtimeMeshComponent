@@ -110,6 +110,7 @@ namespace RealtimeMesh
 	DECLARE_MULTICAST_DELEGATE_OneParam(FRealtimeMeshLODPropertyChangedEvent, const FRealtimeMeshLODKey&);
 
 	DECLARE_MULTICAST_DELEGATE(FRealtimeMeshPropertyChangedEvent);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FRealtimeMeshRenderDataChangedEvent, bool);
 
 
 	DECLARE_DELEGATE(FRealtimeMeshRequestEndOfFrameUpdateDelegate);
@@ -120,6 +121,8 @@ namespace RealtimeMesh
 	{
 		mutable FRealtimeMeshGuard Guard;
 		FName MeshName;
+
+		TWeakObjectPtr<URealtimeMesh> OwningMesh;
 		FRealtimeMeshWeakPtr Owner;
 		FRealtimeMeshProxyWeakPtr Proxy;
 
@@ -139,8 +142,7 @@ namespace RealtimeMesh
 		FRealtimeMeshLODPropertyChangedEvent LODConfigChangedEvent;
 		FRealtimeMeshLODPropertyChangedEvent LODBoundsChangedEvent;
 
-		FRealtimeMeshPropertyChangedEvent MeshRenderDataChangedEvent;
-		FRealtimeMeshPropertyChangedEvent MeshRequestedProxyRecreateEvent;
+		FRealtimeMeshRenderDataChangedEvent MeshRenderDataChangedEvent;
 		FRealtimeMeshPropertyChangedEvent MeshConfigChangedEvent;
 		FRealtimeMeshPropertyChangedEvent MeshBoundsChangedEvent;
 
@@ -166,13 +168,14 @@ namespace RealtimeMesh
 			return *static_cast<SharedResourcesType*>(this);
 		}
 
-		virtual void SetOwnerMesh(const FRealtimeMeshRef& InOwner) { Owner = InOwner; }
+		virtual void SetOwnerMesh(URealtimeMesh* InOwningMesh, const FRealtimeMeshRef& InOwner);
 		virtual void SetProxy(const FRealtimeMeshProxyRef& InProxy) { Proxy = InProxy; }
 
 		FRealtimeMeshGuard& GetGuard() const { return Guard; }
 		FName GetMeshName() const { return MeshName; }
 		void SetMeshName(FName InName) { MeshName = InName; }
 
+		URealtimeMesh* GetOwningMesh() const { return OwningMesh.Get(); }
 		FRealtimeMeshPtr GetOwner() const { return Owner.Pin(); }
 		FRealtimeMeshProxyPtr GetProxy() const { return Proxy.Pin(); }
 
@@ -295,18 +298,14 @@ namespace RealtimeMesh
 		}
 
 
-		FRealtimeMeshPropertyChangedEvent& OnMeshRenderDataChanged() { return MeshRenderDataChangedEvent; }
-		void BroadcastMeshRenderDataChanged() const { MeshRenderDataChangedEvent.Broadcast(); }
+		FRealtimeMeshRenderDataChangedEvent& OnMeshRenderDataChanged() { return MeshRenderDataChangedEvent; }
+		void BroadcastMeshRenderDataChanged(bool bShouldRecreateProxies) const { MeshRenderDataChangedEvent.Broadcast(bShouldRecreateProxies); }
 
 		FRealtimeMeshPropertyChangedEvent& OnMeshConfigChanged() { return MeshConfigChangedEvent; }
 		void BroadcastMeshConfigChanged() const { MeshConfigChangedEvent.Broadcast(); }
 
 		FRealtimeMeshPropertyChangedEvent& OnMeshBoundsChanged() { return MeshBoundsChangedEvent; }
 		void BroadcastMeshBoundsChanged() const { MeshBoundsChangedEvent.Broadcast(); }
-
-		FRealtimeMeshPropertyChangedEvent& OnMeshRequestedProxyRecreate() { return MeshRequestedProxyRecreateEvent; }
-		void BroadcastMeshRequestedProxyRecreate() const { MeshRequestedProxyRecreateEvent.Broadcast(); }
-
 
 		FRealtimeMeshRequestEndOfFrameUpdateDelegate& GetEndOfFrameRequestHandler() { return EndOfFrameRequestHandler; }
 		FRealtimeMeshCollisionUpdateDelegate& GetCollisionUpdateHandler() { return CollisionUpdateHandler; }

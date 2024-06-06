@@ -7,9 +7,12 @@ public class RealtimeMeshComponent : ModuleRules
 {
     public RealtimeMeshComponent(ReadOnlyTargetRules rules) : base(rules)
     {
-        bLegacyPublicIncludePaths = false;
+        //bEnforceIWYU = true;
+        //IWYUSupport = 
+        //bLegacyPublicIncludePaths = false;
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         bUseUnity = false;
+        //IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
 
         // This is to access RayTracing Definitions
         PrivateIncludePaths.Add(Path.Combine(EngineDirectory, "Shaders", "Shared"));

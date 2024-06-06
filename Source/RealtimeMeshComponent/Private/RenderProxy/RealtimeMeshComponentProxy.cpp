@@ -43,7 +43,7 @@ namespace RealtimeMesh
 				Mat = UMaterial::GetDefaultMaterial(MD_Surface);
 			}
 			Materials.Add(MaterialIndex, MakeTuple(Mat->GetRenderProxy(), Mat->IsDitheredLODTransition()));
-			MaterialRelevance |= Mat->GetRelevance(GetScene().GetFeatureLevel());
+			MaterialRelevance |= Mat->GetRelevance_Concurrent(GetScene().GetFeatureLevel());
 			bAnyMaterialUsesDithering = Mat->IsDitheredLODTransition();
 		}
 
@@ -57,6 +57,63 @@ namespace RealtimeMesh
 		bVFRequiresPrimitiveUniformBuffer = !UseGPUScene(GMaxRHIShaderPlatform, FeatureLevel);
 		bStaticElementsAlwaysUseProxyPrimitiveUniformBuffer = true;
 		bVerifyUsedMaterials = false;
+		
+		bSupportsDistanceFieldRepresentation = MaterialRelevance.bOpaque && !MaterialRelevance.bUsesSingleLayerWaterMaterial && RealtimeMeshProxy->HasDistanceFieldData();
+		
+		//bCastsDynamicIndirectShadow = Component->bCastDynamicShadow && Component->CastShadow && Component->Mobility != EComponentMobility::Static;
+		//DynamicIndirectShadowMinVisibility = 0.1f;
+
+
+#if RHI_RAYTRACING
+		bSupportsRayTracing = true; //InRealtimeMeshProxy->HasRayTracingGeometry();
+		//bDynamicRayTracingGeometry = false;
+
+#if RMC_ENGINE_BELOW_5_4
+#if RMC_ENGINE_ABOVE_5_2
+		if (IsRayTracingAllowed() && bSupportsRayTracing)
+#elif RMC_ENGINE_ABOVE_5_1
+		if (IsRayTracingEnabled(GetScene().GetShaderPlatform()) && bSupportsRayTracing)
+#else
+		if (IsRayTracingEnabled() && bSupportsRayTracing)		
+#endif
+		{			
+			RayTracingGeometries.SetNum(InRealtimeMeshProxy->GetNumLODs());
+			for (int32 LODIndex = 0; LODIndex < RealtimeMeshProxy->GetNumLODs(); LODIndex++)
+			{
+				if (FRayTracingGeometry* RayTracingGeo = RealtimeMeshProxy->GetLOD(LODIndex)->GetStaticRayTracingGeometry())
+				{
+					RayTracingGeometries[LODIndex] = RayTracingGeo;
+				}
+			}
+			
+			/*
+			const bool bWantsRayTracingWPO = MaterialRelevance.bUsesWorldPositionOffset && InComponent->bEvaluateWorldPositionOffsetInRayTracing;
+			
+			// r.RayTracing.Geometry.StaticMeshes.WPO is handled in the following way:
+			// 0 - mark ray tracing geometry as dynamic but don't create any dynamic geometries since it won't be included in ray tracing scene
+			// 1 - mark ray tracing geometry as dynamic and create dynamic geometries
+			// 2 - don't mark ray tracing geometry as dynamic nor create any dynamic geometries since WPO evaluation is disabled
+
+			// if r.RayTracing.Geometry.StaticMeshes.WPO == 2, WPO evaluation is disabled so don't need to mark geometry as dynamic
+			if (bWantsRayTracingWPO && CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() != 2)
+			{
+				bDynamicRayTracingGeometry = true;
+
+				// only need dynamic geometries when r.RayTracing.Geometry.StaticMeshes.WPO == 1
+				bNeedsDynamicRayTracingGeometries = CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() == 1;
+			}
+			*/
+		}
+#endif
+#endif
+
+#if RMC_ENGINE_ABOVE_5_2
+		if (MaterialRelevance.bOpaque && !MaterialRelevance.bUsesSingleLayerWaterMaterial)
+		{
+			UpdateVisibleInLumenScene();
+		}
+#endif
+		
 	}
 
 	FRealtimeMeshComponentSceneProxy::~FRealtimeMeshComponentSceneProxy()
@@ -67,11 +124,6 @@ namespace RealtimeMesh
 	bool FRealtimeMeshComponentSceneProxy::CanBeOccluded() const
 	{
 		return !MaterialRelevance.bDisableDepthTest;
-	}
-
-	void FRealtimeMeshComponentSceneProxy::CreateRenderThreadResources()
-	{
-		FPrimitiveSceneProxy::CreateRenderThreadResources();
 	}
 
 	SIZE_T FRealtimeMeshComponentSceneProxy::GetTypeHash() const
@@ -115,13 +167,11 @@ namespace RealtimeMesh
 			{
 				const auto& LOD = RealtimeMeshProxy->GetLOD(FRealtimeMeshLODKey(LODIndex));
 
-				bool bCastRayTracedShadow = false; //IsShadowCast(Context.ReferenceView);
-
 				if (LOD.IsValid() && LOD->GetDrawMask().IsSet(ERealtimeMeshDrawMask::DrawStatic))
 				{
 					LODMask.SetLOD(LODIndex);
 
-					const auto LODScreenSizes = RealtimeMeshProxy->GetScreenSizeLimits(LODIndex);
+					const auto LODScreenSizes = RealtimeMeshProxy->GetScreenSizeRangeForLOD(LODIndex);
 
 					FMeshBatch MeshBatch;
 					FRealtimeMeshBatchCreationParams Params
@@ -141,10 +191,10 @@ namespace RealtimeMesh
 						LODMask,
 						IsMovable(),
 						IsLocalToWorldDeterminantNegative(),
-						bCastRayTracedShadow
+						bCastDynamicShadow
 					};
 
-					RealtimeMeshProxy->CreateMeshBatches(LODIndex, Params, Materials, nullptr, ERealtimeMeshSectionDrawType::Static, false);
+					RealtimeMeshProxy->CreateMeshBatches(LODIndex, Params, Materials, nullptr, ERealtimeMeshSectionDrawType::Static, ERealtimeMeshBatchCreationFlags::None);
 				}
 			}
 		}
@@ -189,37 +239,38 @@ namespace RealtimeMesh
 
 					for (uint8 LODIndex = ValidLODRange.GetLowerBoundValue(); LODIndex <= ValidLODRange.GetUpperBoundValue(); LODIndex++)
 					{
-						const auto& LOD = RealtimeMeshProxy->GetLOD(FRealtimeMeshLODKey(LODIndex));
-
-						bool bCastRayTracedShadow = false; //IsShadowCast(Context.ReferenceView);
-
-						if ((LOD.IsValid() && LOD->GetDrawMask().IsSet(ERealtimeMeshDrawMask::DrawDynamic)) ||
-							(bForceDynamicPath && LOD->GetDrawMask().IsSet(ERealtimeMeshDrawMask::DrawStatic)))
+						if (LODMask.ContainsLOD(LODIndex))
 						{
-							LODMask.SetLOD(LODIndex);
+							const auto& LOD = RealtimeMeshProxy->GetLOD(FRealtimeMeshLODKey(LODIndex));
 
-							const auto LODScreenSizes = RealtimeMeshProxy->GetScreenSizeLimits(LODIndex);
 
-							FRealtimeMeshBatchCreationParams Params
+							if ((LOD.IsValid() && LOD->GetDrawMask().IsSet(ERealtimeMeshDrawMask::DrawDynamic)) ||
+								(bForceDynamicPath && LOD->GetDrawMask().IsSet(ERealtimeMeshDrawMask::DrawStatic)))
 							{
-								[](const TSharedRef<FRenderResource>&)
-								{
-								},
-								[&Collector]()-> FMeshBatch& { return Collector.AllocateMesh(); },
-#if RHI_RAYTRACING
-								[&Collector, ViewIndex](FMeshBatch& Batch, float, const FRayTracingGeometry*) { Collector.AddMesh(ViewIndex, Batch); },
-#else
-								[&Collector, ViewIndex](FMeshBatch& Batch, float) { Collector.AddMesh(ViewIndex, Batch); },
-#endif
-								GetUniformBuffer(),
-								LODScreenSizes,
-								LODMask,
-								IsMovable(),
-								IsLocalToWorldDeterminantNegative(),
-								bCastRayTracedShadow
-							};
+								const auto LODScreenSizes = RealtimeMeshProxy->GetScreenSizeRangeForLOD(LODIndex);
 
-							RealtimeMeshProxy->CreateMeshBatches(LODIndex, Params, Materials, WireframeMaterialInstance, ERealtimeMeshSectionDrawType::Dynamic, bForceDynamicPath);
+								FRealtimeMeshBatchCreationParams Params
+								{
+									[](const TSharedRef<FRenderResource>&)
+									{
+									},
+									[&Collector]()-> FMeshBatch& { return Collector.AllocateMesh(); },
+	#if RHI_RAYTRACING
+									[&Collector, ViewIndex](FMeshBatch& Batch, float, const FRayTracingGeometry*) { Collector.AddMesh(ViewIndex, Batch); },
+	#else
+									[&Collector, ViewIndex](FMeshBatch& Batch, float) { Collector.AddMesh(ViewIndex, Batch); },
+	#endif
+									GetUniformBuffer(),
+									LODScreenSizes,
+									LODMask,
+									IsMovable(),
+									IsLocalToWorldDeterminantNegative(),
+									bCastDynamicShadow
+								};
+
+								RealtimeMeshProxy->CreateMeshBatches(LODIndex, Params, Materials, WireframeMaterialInstance, ERealtimeMeshSectionDrawType::Dynamic,
+									bForceDynamicPath? ERealtimeMeshBatchCreationFlags::ForceAllDynamic : ERealtimeMeshBatchCreationFlags::None);
+							}
 						}
 					}
 				}
@@ -249,6 +300,65 @@ namespace RealtimeMesh
 		}
 	}
 
+	void FRealtimeMeshComponentSceneProxy::GetDistanceFieldAtlasData(const FDistanceFieldVolumeData*& OutDistanceFieldData, float& SelfShadowBias) const
+	{
+		OutDistanceFieldData = RealtimeMeshProxy->GetDistanceFieldData();
+		SelfShadowBias = DistanceFieldSelfShadowBias;
+	}
+
+	void FRealtimeMeshComponentSceneProxy::GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const
+	{
+		check(InstanceLocalToPrimitiveTransforms.IsEmpty());
+
+		if (RealtimeMeshProxy->HasDistanceFieldData())
+		{
+			InstanceLocalToPrimitiveTransforms.Add(FRenderTransform::Identity);
+		}
+	}
+
+	bool FRealtimeMeshComponentSceneProxy::HasDistanceFieldRepresentation() const
+	{
+		return CastsDynamicShadow() && AffectsDistanceFieldLighting() && RealtimeMeshProxy->HasDistanceFieldData();
+	}
+
+	bool FRealtimeMeshComponentSceneProxy::HasDynamicIndirectShadowCasterRepresentation() const
+	{
+		return bCastsDynamicIndirectShadow && HasDistanceFieldRepresentation();
+	}
+
+	const FCardRepresentationData* FRealtimeMeshComponentSceneProxy::GetMeshCardRepresentation() const
+	{
+		return RealtimeMeshProxy->GetCardRepresentation();
+	}
+
+	bool FRealtimeMeshComponentSceneProxy::HasRayTracingRepresentation() const
+	{
+#if RHI_RAYTRACING
+		return bSupportsRayTracing;
+#else
+		return false;
+#endif
+	}
+
+#if RMC_ENGINE_ABOVE_5_4
+	TArray<FRayTracingGeometry*> FRealtimeMeshComponentSceneProxy::GetStaticRayTracingGeometries() const
+	{
+#if RHI_RAYTRACING
+		if (IsRayTracingAllowed() && bSupportsRayTracing)
+		{
+			TArray<FRayTracingGeometry*> RayTracingGeometries;
+			RayTracingGeometries.SetNum(RealtimeMeshProxy->GetNumLODs());
+			for (int32 LODIndex = 0; LODIndex < RealtimeMeshProxy->GetNumLODs(); LODIndex++)
+			{
+				RayTracingGeometries[LODIndex] = RealtimeMeshProxy->GetLOD(LODIndex)->GetStaticRayTracingGeometry();
+			}
+
+			return MoveTemp(RayTracingGeometries);
+		}
+#endif // RHI_RAYTRACING
+		return {};
+	}
+#endif // RMC_ENGINE_ABOVE_5_4
 
 #if RHI_RAYTRACING
 	void FRealtimeMeshComponentSceneProxy::GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context,
@@ -256,19 +366,18 @@ namespace RealtimeMesh
 	{
 		SCOPE_CYCLE_COUNTER(STAT_RealtimeMeshComponentSceneProxy_GetDynamicRayTracingInstances);
 
-		// TODO: Should this use any LOD determination logic? Or always use a specific LOD?
-		const int32 LODIndex = 0;
+		const uint32 LODIndex = FMath::Max(GetLOD(Context.ReferenceView), (int32)GetCurrentFirstLODIdx_RenderThread());
 
 		if (RealtimeMeshProxy->GetDrawMask().HasAnyFlags())
 		{
 			if (auto LOD = RealtimeMeshProxy->GetLOD(LODIndex))
-			{
+			{				
 				if (LOD.IsValid() && LOD->GetDrawMask().IsAnySet(ERealtimeMeshDrawMask::DrawDynamic | ERealtimeMeshDrawMask::DrawStatic))
 				{
 					FLODMask LODMask;
 					LODMask.SetLOD(LODIndex);
 
-					const auto LODScreenSizes = RealtimeMeshProxy->GetScreenSizeLimits(LODIndex);
+					const auto LODScreenSizes = RealtimeMeshProxy->GetScreenSizeRangeForLOD(LODIndex);
 
 					TMap<const FRayTracingGeometry*, int32> CurrentRayTracingGeometries;
 					
@@ -314,10 +423,11 @@ namespace RealtimeMesh
 						LODMask,
 						IsMovable(),
 						IsLocalToWorldDeterminantNegative(),
-						IsShadowCast(Context.ReferenceView)
+						bCastDynamicShadow
 					};
 
-					RealtimeMeshProxy->CreateMeshBatches(LODIndex, Params, Materials, nullptr, ERealtimeMeshSectionDrawType::Dynamic, true /* bForceDynamicPath */);
+					RealtimeMeshProxy->CreateMeshBatches(LODIndex, Params, Materials, nullptr, ERealtimeMeshSectionDrawType::Dynamic, 
+						ERealtimeMeshBatchCreationFlags::ForceAllDynamic | ERealtimeMeshBatchCreationFlags::SkipStaticRayTracedSections);
 
 #if RMC_ENGINE_BELOW_5_2
 					for (auto& RayTracingInstance : OutRayTracingInstances)
@@ -349,7 +459,8 @@ namespace RealtimeMesh
 		// Walk backwards and return the first matching LOD
 		for (int32 LODIndex = NumLODs - 1; LODIndex >= 0; --LODIndex)
 		{
-			if (FMath::Square(RealtimeMeshProxy->GetScreenSizeRangeForLOD(LODIndex).GetLowerBoundValue() * 0.5f) > ScreenRadiusSquared)
+			const float LODSScreenSizeSquared = FMath::Square(RealtimeMeshProxy->GetScreenSizeRangeForLOD(LODIndex).GetLowerBoundValue() * 0.5f);
+			if (LODSScreenSizeSquared > ScreenRadiusSquared)
 			{
 				return LODIndex;
 			}
@@ -367,9 +478,10 @@ namespace RealtimeMesh
 		// Walk backwards and return the first matching LOD
 		for (int32 LODIndex = RealtimeMeshProxy->GetNumLODs() - 1; LODIndex >= 0; --LODIndex)
 		{
-			if (FMath::Square(RealtimeMeshProxy->GetScreenSizeRangeForLOD(LODIndex).GetLowerBoundValue() * 0.5f) > ScreenRadiusSquared)
+			const float LODSScreenSizeSquared = FMath::Square(RealtimeMeshProxy->GetScreenSizeRangeForLOD(LODIndex).GetLowerBoundValue() * 0.5f);
+			if (LODSScreenSizeSquared > ScreenRadiusSquared)
 			{
-				return FMath::Max(LODIndex, MinLOD);
+ 				return FMath::Max(LODIndex, MinLOD);
 			}
 		}
 

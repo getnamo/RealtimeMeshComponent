@@ -1,4 +1,4 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+// Copyright TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,7 @@
 #include "RealtimeMeshGPUBuffer.h"
 #include "RealtimeMeshProxyShared.h"
 #include "RealtimeMeshVertexFactory.h"
+#include "RealtimeMeshSectionProxy.h"
 
 namespace RealtimeMesh
 {
@@ -36,8 +37,23 @@ namespace RealtimeMesh
 		FRealtimeMeshSectionProxyPtr GetSection(const FRealtimeMeshSectionKey& SectionKey) const;
 		TSharedPtr<FRealtimeMeshGPUBuffer> GetStream(const FRealtimeMeshStreamKey& StreamKey) const;
 
-		virtual bool ShouldCreateRayTracingData() const { return Key.LOD().Index() == 0; }
-
+		template<typename ProcessFunc>
+		void ProcessSections(ERealtimeMeshDrawMask InDrawMask, ProcessFunc ProcessFunction) const
+		{
+			if (DrawMask.IsSet(InDrawMask))
+			{
+				for (const FRealtimeMeshSectionProxyRef& Section : Sections)
+				{
+					if (Section->GetDrawMask().IsSet(InDrawMask))
+					{
+						ProcessFunction(Section);
+					}
+				}
+			}
+		}
+		
+		FRayTracingGeometry* GetRayTracingGeometry();
+		
 		virtual void CreateSectionIfNotExists(const FRealtimeMeshSectionKey& SectionKey);
 		virtual void RemoveSection(const FRealtimeMeshSectionKey& SectionKey);
 

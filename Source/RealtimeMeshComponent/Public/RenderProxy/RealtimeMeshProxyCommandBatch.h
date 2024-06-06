@@ -8,7 +8,7 @@
 
 namespace RealtimeMesh
 {
-	struct FRealtimeMeshProxyCommandBatch
+	struct REALTIMEMESHCOMPONENT_API FRealtimeMeshProxyCommandBatch
 	{
 	private:
 		using TaskFunctionType = TUniqueFunction<void(FRealtimeMeshProxy&)>;
@@ -30,6 +30,7 @@ namespace RealtimeMesh
 		TFuture<ERealtimeMeshProxyUpdateStatus> Commit();
 
 		void MarkForProxyRecreate() { bRequiresProxyRecreate = true; }
+		void ClearProxyRecreate() { bRequiresProxyRecreate = false; }
 
 		void AddMeshTask(TUniqueFunction<void(FRealtimeMeshProxy&)>&& Function, bool bInRequiresProxyRecreate = true);
 

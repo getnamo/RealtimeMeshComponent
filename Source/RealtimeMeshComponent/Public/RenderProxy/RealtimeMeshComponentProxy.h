@@ -34,7 +34,8 @@ namespace RealtimeMesh
 		// Store the combined material relevance.
 		FMaterialRelevance MaterialRelevance;
 
-		bool bAnyMaterialUsesDithering;
+		uint32 bAnyMaterialUsesDithering : 1;
+		uint32 bSupportsRayTracing : 1;
 
 	public:
 		/*Constructor, copies the whole mesh data to feed to UE */
@@ -53,20 +54,29 @@ namespace RealtimeMesh
 
 		virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
 
-		virtual void CreateRenderThreadResources() override;
-
 		virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
 
+		virtual bool HasRayTracingRepresentation() const;
+
+#if RMC_ENGINE_ABOVE_5_4
+		virtual TArray<FRayTracingGeometry*> GetStaticRayTracingGeometries() const;
+#endif
 		virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap,
 		                                    FMeshElementCollector& Collector) const override;
 
+		virtual void GetDistanceFieldAtlasData(const FDistanceFieldVolumeData*& OutDistanceFieldData, float& SelfShadowBias) const override;
+		virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const override;
+		virtual bool HasDistanceFieldRepresentation() const override;
+		virtual bool HasDynamicIndirectShadowCasterRepresentation() const override;
 
+		virtual const FCardRepresentationData* GetMeshCardRepresentation() const override;
+		
 #if RHI_RAYTRACING
 		virtual bool IsRayTracingRelevant() const override { return true; }
-		virtual bool IsRayTracingStaticRelevant() const { return false; }
+		virtual bool IsRayTracingStaticRelevant() const override { return true; }
 
 		/** Gathers dynamic ray tracing instances from this proxy. */
-		virtual void GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context, TArray<struct FRayTracingInstance>& OutRayTracingInstances);
+		virtual void GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context, TArray<struct FRayTracingInstance>& OutRayTracingInstances) override;
 
 #endif // RHI_RAYTRACING
 
@@ -74,11 +84,6 @@ namespace RealtimeMesh
 		SIZE_T GetAllocatedSize(void) const;
 
 		FMaterialRenderProxy* GetMaterialSlot(int32 MaterialSlotId) const;
-
-
-		// void CreateMeshBatch(TArray<TSharedRef<FRealtimeMeshRenderingBuffers>>* InUseBuffers, FMeshBatch& MeshBatch, const FRealtimeMeshLODProxy& LOD, const FLODMask& LODMask, const TScreenSizeLimits& ScreenSizeLimits,
-		// 	int32 SectionID, const FMaterialRenderProxy* WireframeMaterial, const FMaterialRenderProxy* SectionMaterial, bool bSupportsDithering) const;
-
 
 		int8 GetCurrentFirstLOD() const;
 

@@ -1,4 +1,4 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+// Copyright TriAxis Games, L.L.C. All Rights Reserved.
 
 #include "RenderProxy/RealtimeMeshSectionGroupProxy.h"
 
@@ -45,6 +45,14 @@ namespace RealtimeMesh
 		return Streams.FindRef(StreamKey);
 	}
 
+	FRayTracingGeometry* FRealtimeMeshSectionGroupProxy::GetRayTracingGeometry()
+	{
+#if RHI_RAYTRACING
+		return &RayTracingGeometry;
+#else
+		return nullptr;
+#endif
+	}
 
 	void FRealtimeMeshSectionGroupProxy::CreateSectionIfNotExists(const FRealtimeMeshSectionKey& SectionKey)
 	{
@@ -91,7 +99,7 @@ namespace RealtimeMesh
 		{
 			// We only stream in place if the existing buffer is zero or the same size as the new one
 			if ((FoundBuffer->Get()->Num() == 0 || FoundBuffer->Get()->Num() == InStream->GetNumElements()) &&
-				FoundBuffer->Get()->GetBufferLayout().GetBufferLayout() == InStream->GetBufferLayout().GetBufferLayout())
+				FoundBuffer->Get()->GetBufferLayout() == InStream->GetBufferLayout())
 			{
 				GPUBuffer = *FoundBuffer;
 			}
@@ -104,8 +112,8 @@ namespace RealtimeMesh
 		if (!GPUBuffer)
 		{
 			GPUBuffer = InStream->GetStreamKey().GetStreamType() == ERealtimeMeshStreamType::Vertex
-				            ? StaticCastSharedRef<FRealtimeMeshGPUBuffer>(MakeShared<FRealtimeMeshVertexBuffer>(InStream->GetBufferLayout().GetBufferLayout()))
-				            : StaticCastSharedRef<FRealtimeMeshGPUBuffer>(MakeShared<FRealtimeMeshIndexBuffer>(InStream->GetBufferLayout().GetBufferLayout()));
+				            ? StaticCastSharedRef<FRealtimeMeshGPUBuffer>(MakeShared<FRealtimeMeshVertexBuffer>(InStream->GetBufferLayout()))
+				            : StaticCastSharedRef<FRealtimeMeshGPUBuffer>(MakeShared<FRealtimeMeshIndexBuffer>(InStream->GetBufferLayout()));
 
 			// We must initialize the resources first before we then apply a buffer to it.
 			GPUBuffer->InitializeResources();
@@ -186,6 +194,10 @@ namespace RealtimeMesh
 		// Handle the vertex factory first so sections can query it
 		if (bIsStateDirty || bShouldForceUpdate)
 		{
+			if (!VertexFactory)
+			{
+				VertexFactory = SharedResources->CreateVertexFactory();
+			}
 			VertexFactory->Initialize(Streams);
 		}
 
@@ -244,6 +256,7 @@ namespace RealtimeMesh
 			Section->Reset();
 		}
 		Sections.Empty();
+		SectionMap.Reset();
 
 		DrawMask = FRealtimeMeshDrawMask();
 		bIsStateDirty = true;
@@ -253,8 +266,11 @@ namespace RealtimeMesh
 	{
 #if RHI_RAYTRACING
 		RayTracingGeometry.ReleaseResource();
-		if (DrawMask.HasAnyFlags() && VertexFactory.IsValid() && ShouldCreateRayTracingData() && IsRayTracingEnabled())
+		
+		if (DrawMask.HasAnyFlags() && VertexFactory.IsValid() && IsRayTracingEnabled())
 		{
+			check(VertexFactory->IsInitialized());
+			
 			const auto PositionStream = StaticCastSharedPtr<FRealtimeMeshVertexBuffer>(Streams.FindChecked(FRealtimeMeshStreams::Position));
 			const auto IndexStream = StaticCastSharedPtr<FRealtimeMeshIndexBuffer>(Streams.FindChecked(FRealtimeMeshStreams::Triangles));
 
@@ -270,8 +286,6 @@ namespace RealtimeMesh
 			uint32 HighestSegmentPrimitive = 0;
 			for (const auto& Section : Sections)
 			{
-				check(GetVertexFactory() && GetVertexFactory().IsValid() && GetVertexFactory()->IsInitialized());
-
 				FRayTracingGeometrySegment Segment;
 				Segment.VertexBuffer = PositionStream->VertexBufferRHI;
 				Segment.VertexBufferOffset = 0; // Section->GetStreamRange().GetMinVertex() * sizeof(FVector3f);
