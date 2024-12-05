@@ -1,13 +1,16 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+﻿// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #include "RealtimeMeshSimple.h"
+
+#include "RealtimeMeshComponent.h"
 #include "RealtimeMeshCore.h"
-#include "Mesh/RealtimeMeshBuilder.h"
-#include "Mesh/RealtimeMeshSimpleData.h"
+#include "Core/RealtimeMeshBuilder.h"
 #include "RenderProxy/RealtimeMeshProxyCommandBatch.h"
 #include "RenderProxy/RealtimeMeshSectionGroupProxy.h"
 #include "RenderProxy/RealtimeMeshVertexFactory.h"
 #include "Async/Async.h"
+#include "Core/RealtimeMeshFuture.h"
+#include "Data/RealtimeMeshUpdateBuilder.h"
 #include "Mesh/RealtimeMeshAlgo.h"
 #include "Mesh/RealtimeMeshBlueprintMeshBuilder.h"
 #include "RenderProxy/RealtimeMeshProxy.h"
@@ -29,121 +32,29 @@ namespace RealtimeMesh
 		: FRealtimeMeshSection(InSharedResources, InKey)
 		  , bShouldCreateMeshCollision(false)
 	{
-		SharedResources->OnStreamChanged().AddRaw(this, &FRealtimeMeshSectionSimple::HandleStreamsChanged);
 	}
 
 	FRealtimeMeshSectionSimple::~FRealtimeMeshSectionSimple()
 	{
-		SharedResources->OnStreamChanged().RemoveAll(this);
 	}
 
-	void FRealtimeMeshSectionSimple::SetShouldCreateCollision(bool bNewShouldCreateMeshCollision)
+	void FRealtimeMeshSectionSimple::SetShouldCreateCollision(FRealtimeMeshUpdateContext& UpdateContext, bool bNewShouldCreateMeshCollision)
 	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
 		if (bShouldCreateMeshCollision != bNewShouldCreateMeshCollision)
 		{
 			bShouldCreateMeshCollision = bNewShouldCreateMeshCollision;
-			MarkBoundsDirtyIfNotOverridden();
-			MarkCollisionDirtyIfNecessary();
+			MarkCollisionDirty(UpdateContext);
 		}
 	}
 
-	void FRealtimeMeshSectionSimple::UpdateStreamRange(FRealtimeMeshProxyCommandBatch& Commands, const FRealtimeMeshStreamRange& InRange)
+	void FRealtimeMeshSectionSimple::UpdateStreamRange(FRealtimeMeshUpdateContext& UpdateContext, const FRealtimeMeshStreamRange& InRange)
 	{
-		if (!GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>()->IsStandalone())
-		{
-			FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
-			FRealtimeMeshSection::UpdateStreamRange(Commands, InRange);
+		auto ParentGroup = GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>(UpdateContext);
+		
+		FRealtimeMeshSection::UpdateStreamRange(UpdateContext, InRange);		
 
-			MarkBoundsDirtyIfNotOverridden();
-			MarkCollisionDirtyIfNecessary();
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(
-				FText::Format(LOCTEXT("UpdateStreamRange_StandaloneInvalid", "Attempted to update stream range of standalone section. You cannot update this separately from SectionGroup mesh data in Mesh:{1}"),
-							  FText::FromName(SharedResources->GetMeshName())));
-		}
-	}
-
-	bool FRealtimeMeshSectionSimple::GenerateCollisionMesh(FRealtimeMeshTriMeshData& CollisionData)
-	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-		if (bShouldCreateMeshCollision)
-		{
-			if (const auto SectionGroup = GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>())
-			{
-				const auto PositionStream = SectionGroup->GetStream(FRealtimeMeshStreams::Position);
-				const auto TriangleStream = SectionGroup->GetStream(FRealtimeMeshStreams::Triangles);
-
-				const auto TexCoordsStream = SectionGroup->GetStream(FRealtimeMeshStreamKey(FRealtimeMeshStreams::TexCoords));
-
-				auto& CollisionVertices = CollisionData.GetVertices();
-				auto& CollisionUVs = CollisionData.GetUVs();
-				auto& CollisionMaterials = CollisionData.GetMaterials();
-				auto& CollisionTriangles = CollisionData.GetTriangles();
-
-				if (PositionStream && TriangleStream)
-				{
-					if (PositionStream->Num() >= 3 && (TriangleStream->Num() * TriangleStream->GetNumElements()) >= 3)
-					{
-						const int32 StartVertexIndex = CollisionVertices.Num();
-
-						// Copy in the vertices
-						const auto PositionsView = PositionStream->GetArrayView<FVector3f>();
-						CollisionVertices.Append(PositionsView.GetData(), PositionsView.Num());
-
-						if (TexCoordsStream)
-						{
-							CollisionUVs.SetNum(TexCoordsStream->GetNumElements());
-							for (int32 ChannelIndex = 0; ChannelIndex < TexCoordsStream->GetNumElements(); ChannelIndex++)
-							{
-								TRealtimeMeshStridedStreamBuilder<const FVector2d, void> UVData(*TexCoordsStream, ChannelIndex);
-								const int32 NumUVsToCopy = FMath::Min(UVData.Num(), PositionStream->Num());
-								auto& CollisionUVChannel = CollisionUVs[ChannelIndex];
-								CollisionUVChannel.SetNumUninitialized(NumUVsToCopy);
-								
-								for (int32 TexCoordIdx = 0; TexCoordIdx < NumUVsToCopy; TexCoordIdx++)
-								{
-									CollisionUVChannel[TexCoordIdx] = UVData[TexCoordIdx];
-								}
-
-								// Make sure the uv data is the same length as the position data
-								if (PositionStream->Num() > UVData.Num())
-								{
-									CollisionUVChannel.SetNumZeroed(PositionStream->Num());
-								}
-							}
-						}
-						else
-						{
-							// Zero fill a single channel since we didn't have valid UVs
-							CollisionUVs.SetNum(1);
-							CollisionUVs[0].SetNumZeroed(PositionStream->Num());
-						}
-
-						const int32 MaterialSlot = GetConfig().MaterialSlot;
-
-						TRealtimeMeshStreamBuilder<const TIndex3<uint32>, void> TrianglesData(*TriangleStream);
-						CollisionTriangles.Reserve(TrianglesData.Num());
-						CollisionMaterials.Reserve(TrianglesData.Num());
-
-						for (int32 TriIdx = 0; TriIdx < TrianglesData.Num(); TriIdx++)
-						{
-							FTriIndices& Tri = CollisionTriangles.AddDefaulted_GetRef();
-							Tri.v0 = TrianglesData[TriIdx].GetElement(0).GetValue() + StartVertexIndex;
-							Tri.v1 = TrianglesData[TriIdx].GetElement(1).GetValue() + StartVertexIndex;
-							Tri.v2 = TrianglesData[TriIdx].GetElement(2).GetValue() + StartVertexIndex;
-
-							CollisionMaterials.Add(MaterialSlot);
-						}
-						
-						return true;
-					}
-				}
-			}
-		}
-		return false;
+		MarkBoundsDirtyIfNotOverridden(UpdateContext);
+		MarkCollisionDirty(UpdateContext);
 	}
 
 	bool FRealtimeMeshSectionSimple::Serialize(FArchive& Ar)
@@ -155,85 +66,59 @@ namespace RealtimeMesh
 		return bResult;
 	}
 
-	void FRealtimeMeshSectionSimple::Reset(FRealtimeMeshProxyCommandBatch& Commands)
+	void FRealtimeMeshSectionSimple::Reset(FRealtimeMeshUpdateContext& UpdateContext)
 	{
+		FRealtimeMeshSection::Reset(UpdateContext);
 		bShouldCreateMeshCollision = false;
-		FRealtimeMeshSection::Reset(Commands);
+		MarkCollisionDirty(UpdateContext);
 	}
 
-	void FRealtimeMeshSectionSimple::HandleStreamsChanged(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshStreamKey& StreamKey, ERealtimeMeshChangeType ChangeType) const
+	void FRealtimeMeshSectionSimple::FinalizeUpdate(FRealtimeMeshUpdateContext& UpdateContext)
 	{
-		if (!bShouldCreateMeshCollision || !Key.IsPartOf(SectionGroupKey))
-		{
-			return;
-		}
+		FRealtimeMeshSection::FinalizeUpdate(UpdateContext);
 
-		if (StreamKey == FRealtimeMeshStreams::Position || StreamKey == FRealtimeMeshStreams::TexCoords || StreamKey == FRealtimeMeshStreams::Triangles)
+		if (!HasOverrideBounds(UpdateContext))
 		{
-			MarkBoundsDirtyIfNotOverridden();
-			MarkCollisionDirtyIfNecessary();
-		}
-	}
-
-	FBoxSphereBounds3f FRealtimeMeshSectionSimple::CalculateBounds() const
-	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-		TOptional<FBoxSphereBounds3f> LocalBounds;
-
-		if (const auto SectionGroup = GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>())
-		{
-			const auto Stream = SectionGroup->GetStream(FRealtimeMeshStreamKey(
-				ERealtimeMeshStreamType::Vertex, FRealtimeMeshStreams::PositionStreamName));
-			if (Stream && GetStreamRange().NumVertices() > 0 && GetStreamRange().GetMaxVertex() < Stream->Num())
+			auto& State = UpdateContext.GetState();
+			bool bStreamsUpdated = State.StreamDirtyTree.HasDirtyStreams(Key);
+			if (bStreamsUpdated)
 			{
-				const auto TestLayout = GetRealtimeMeshBufferLayout<FVector3f>();
-				if (Stream->GetLayout() == TestLayout)
+				const auto& StreamsUpdated = State.StreamDirtyTree.GetDirtyStreams(Key);
+				bStreamsUpdated &= StreamsUpdated.Contains(FRealtimeMeshStreams::Position) || StreamsUpdated.Contains(FRealtimeMeshStreams::Triangles);
+			}
+			
+			if (State.BoundsDirtyTree.IsDirty(Key) || bStreamsUpdated || State.StreamRangeDirtyTree.IsDirty(Key))
+			{
+				TOptional<FBoxSphereBounds3f> LocalBounds;
+
+				if (const auto SectionGroup = GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>(UpdateContext))
 				{
-					const FVector3f* Points = Stream->GetData<FVector3f>() + GetStreamRange().GetMinVertex();
-					LocalBounds = FBoxSphereBounds3f(Points, GetStreamRange().NumVertices());
+					const auto Stream = SectionGroup->GetStream(UpdateContext, FRealtimeMeshStreams::Position);
+					const auto SectionStreamRange = GetStreamRange(UpdateContext);
+					if (Stream && SectionStreamRange.NumVertices() > 0 && SectionStreamRange.GetMaxVertex() < Stream->Num())
+					{
+						if (Stream->GetLayout() == GetRealtimeMeshBufferLayout<FVector3f>())
+						{
+							const FVector3f* Points = Stream->GetData<FVector3f>() + SectionStreamRange.GetMinVertex();
+							LocalBounds = FBoxSphereBounds3f(Points, SectionStreamRange.NumVertices());
+						}
+					}
 				}
+
+				UpdateCalculatedBounds(UpdateContext, LocalBounds);
+
+				State.BoundsDirtyTree.Flag(Key.SectionGroup());
 			}
 		}
-
-		// Set the bounds if we made one, or default them
-		return LocalBounds.IsSet() ? LocalBounds.GetValue() : FBoxSphereBounds3f(FSphere3f(FVector3f::ZeroVector, 1.0f));
 	}
 
-	void FRealtimeMeshSectionSimple::MarkCollisionDirtyIfNecessary() const
+	void FRealtimeMeshSectionSimple::MarkCollisionDirty(FRealtimeMeshUpdateContext& UpdateContext) const
 	{
-		auto SimpleSharedResources = StaticCastSharedRef<FRealtimeMeshSharedResourcesSimple>(SharedResources);
-		auto SimpleOwner = StaticCastSharedPtr<FRealtimeMeshSimple>(SimpleSharedResources->GetOwner());
-		
-		if (bShouldCreateMeshCollision && !SimpleOwner->HasCustomComplexMeshGeometry())
-		{
-			SimpleSharedResources->BroadcastCollisionDataChanged();
-		}
+		UpdateContext.GetState<FRealtimeMeshSimpleUpdateState>().CollisionGroupDirtySet.Flag(GetKey(UpdateContext).SectionGroup());		
 	}
 
-	
-
-	FRealtimeMeshSectionPtr FRealtimeMeshSectionGroupSimple::GetStandaloneSection() const
+	FRealtimeMeshStreamRange FRealtimeMeshSectionGroupSimple::GetValidStreamRange(const FRealtimeMeshLockContext& LockContext) const
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-		if (IsStandalone())
-		{
-			check(Sections.Num() <= 1);
-			return Sections.Num() > 0 ? *Sections.CreateConstIterator() : FRealtimeMeshSectionPtr(nullptr);
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(FText::Format(
-				LOCTEXT("GetStandaloneSection_InvalidOnNonStandaloneGroup", "Unable to get standalone section of non standalone group {0} for mesh {1}"),
-				FText::FromString(Key.ToString()), FText::FromName(SharedResources->GetMeshName())));
-		}
-
-		return nullptr;
-	}
-
-	FRealtimeMeshStreamRange FRealtimeMeshSectionGroupSimple::GetStreamRange() const
-	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-
 		FRealtimeMeshStreamRange StreamRange;
 
 		if (const FRealtimeMeshStream* Stream = Streams.Find(FRealtimeMeshStreams::Position))
@@ -249,13 +134,12 @@ namespace RealtimeMesh
 		return StreamRange;
 	}
 
-	const FRealtimeMeshStream* FRealtimeMeshSectionGroupSimple::GetStream(FRealtimeMeshStreamKey StreamKey) const
+	const FRealtimeMeshStream* FRealtimeMeshSectionGroupSimple::GetStream(const FRealtimeMeshLockContext& LockContext, FRealtimeMeshStreamKey StreamKey) const
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 		return Streams.Find(StreamKey);
 	}
 
-	void FRealtimeMeshSectionGroupSimple::SetPolyGroupSectionHandler(const FRealtimeMeshPolyGroupConfigHandler& NewHandler)
+	void FRealtimeMeshSectionGroupSimple::SetPolyGroupSectionHandler(FRealtimeMeshUpdateContext& UpdateContext, const FRealtimeMeshPolyGroupConfigHandler& NewHandler)
 	{
 		if (NewHandler.IsBound())
 		{
@@ -263,26 +147,22 @@ namespace RealtimeMesh
 		}
 		else
 		{
-			ClearPolyGroupSectionHandler();
+			ClearPolyGroupSectionHandler(UpdateContext);
 		}
 	}
 
-	void FRealtimeMeshSectionGroupSimple::ClearPolyGroupSectionHandler()
+	void FRealtimeMeshSectionGroupSimple::ClearPolyGroupSectionHandler(FRealtimeMeshUpdateContext& UpdateContext)
 	{
 		ConfigHandler = FRealtimeMeshPolyGroupConfigHandler::CreateSP(this, &FRealtimeMeshSectionGroupSimple::DefaultPolyGroupSectionHandler);
 	}
 
-	void FRealtimeMeshSectionGroupSimple::ProcessMeshData(TFunctionRef<void(const FRealtimeMeshStreamSet&)> ProcessFunc) const
-	{		
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
+	void FRealtimeMeshSectionGroupSimple::ProcessMeshData(const FRealtimeMeshLockContext& LockContext, TFunctionRef<void(const FRealtimeMeshStreamSet&)> ProcessFunc) const
+	{
 		ProcessFunc(Streams);
 	}
 
-	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshSectionGroupSimple::EditMeshData(TFunctionRef<TSet<FRealtimeMeshStreamKey>(FRealtimeMeshStreamSet&)> EditFunc)
+	void FRealtimeMeshSectionGroupSimple::EditMeshData(FRealtimeMeshUpdateContext& UpdateContext, TFunctionRef<TSet<FRealtimeMeshStreamKey>(FRealtimeMeshStreamSet&)> EditFunc)
 	{
-		FRealtimeMeshProxyCommandBatch Commands(SharedResources);
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
-
 		auto UpdatedStreams = EditFunc(Streams);
 
 		for (const auto& UpdatedStream : UpdatedStreams)
@@ -290,7 +170,7 @@ namespace RealtimeMesh
 			if (const auto* Stream = Streams.Find(UpdatedStream))
 			{
 				FRealtimeMeshStream StreamCopy(*Stream);				
-				FRealtimeMeshSectionGroup::CreateOrUpdateStream(Commands, MoveTemp(StreamCopy));
+				FRealtimeMeshSectionGroup::CreateOrUpdateStream(UpdateContext, MoveTemp(StreamCopy));
 			}
 			else
 			{				
@@ -299,104 +179,37 @@ namespace RealtimeMesh
 								  FText::FromString(UpdatedStream.ToString()), FText::FromName(SharedResources->GetMeshName())));
 			}
 		}
-		
-		if (IsStandalone() && GetStandaloneSection())
-		{
-			GetStandaloneSection()->UpdateStreamRange(Commands, GetStreamRange());
-		}
-
-		return Commands.Commit();
 	}
-	
-	void FRealtimeMeshSectionGroupSimple::CreateOrUpdateStream(FRealtimeMeshProxyCommandBatch& Commands, FRealtimeMeshStream&& Stream)
-	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
 
+	void FRealtimeMeshSectionGroupSimple::CreateOrUpdateStream(FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshStream&& Stream)
+	{
 		// Replace the stored stream (We allow this to copy as we then pass the stream to the RT command queue)
 		Streams.AddStream(Stream);
 		
 		// If this stream is a segments stream or polygon group stream lets update the sections
 		if (bAutoCreateSectionsForPolygonGroups && !Simple::Private::bShouldDeferPolyGroupUpdates)
 		{
-			if (Stream.GetStreamKey() == FRealtimeMeshStreams::PolyGroups ||
-				Stream.GetStreamKey() == FRealtimeMeshStreams::PolyGroupSegments ||
-				Stream.GetStreamKey() == FRealtimeMeshStreams::Triangles)
+			const bool bShouldCreateSingularSection = ShouldCreateSingularSection();
+			
+			if ((bShouldCreateSingularSection && Stream.GetStreamKey() == FRealtimeMeshStreams::Triangles) ||
+				(!bShouldCreateSingularSection && (Stream.GetStreamKey() == FRealtimeMeshStreams::Triangles ||
+					Stream.GetStreamKey() == FRealtimeMeshStreams::PolyGroups)))
 			{
-				UpdatePolyGroupSections(Commands, false);
+				UpdatePolyGroupSections(UpdateContext, false);
 			}
-			else if (Stream.GetStreamKey() == FRealtimeMeshStreams::DepthOnlyPolyGroups ||
-				Stream.GetStreamKey() == FRealtimeMeshStreams::DepthOnlyPolyGroupSegments ||
-				Stream.GetStreamKey() == FRealtimeMeshStreams::DepthOnlyTriangles)
+			else if ((bShouldCreateSingularSection && Stream.GetStreamKey() == FRealtimeMeshStreams::DepthOnlyTriangles) ||
+				(!bShouldCreateSingularSection && (Stream.GetStreamKey() == FRealtimeMeshStreams::DepthOnlyPolyGroups ||
+					Stream.GetStreamKey() == FRealtimeMeshStreams::PolyGroups)))
 			{
-				UpdatePolyGroupSections(Commands, true);
+				UpdatePolyGroupSections(UpdateContext, true);
 			}
 		}
 		
-		FRealtimeMeshSectionGroup::CreateOrUpdateStream(Commands, MoveTemp(Stream));
-
-		if (IsStandalone() && GetStandaloneSection())
-		{
-			GetStandaloneSection()->UpdateStreamRange(Commands, GetStreamRange());
-		}		
+		FRealtimeMeshSectionGroup::CreateOrUpdateStream(UpdateContext, MoveTemp(Stream));
 	}
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshSectionGroupSimple::UpdateFromSimpleMesh(const FRealtimeMeshSimpleMeshData& MeshData)
+	void FRealtimeMeshSectionGroupSimple::RemoveStream(FRealtimeMeshUpdateContext& UpdateContext, const FRealtimeMeshStreamKey& StreamKey)
 	{
-		FRealtimeMeshProxyCommandBatch Commands(SharedResources);
-		UpdateFromSimpleMesh(Commands, MeshData);
-		return Commands.Commit();
-	}
-
-	void FRealtimeMeshSectionGroupSimple::UpdateFromSimpleMesh(FRealtimeMeshProxyCommandBatch& Commands, const FRealtimeMeshSimpleMeshData& MeshData)
-	{
-		if (MeshData.Positions.Num() < 3)
-		{
-			FMessageLog("RealtimeMesh").Error(FText::Format(
-				LOCTEXT("UpdateFromSimpleMeshData_InvalidVertexCount", "Invalid vertex count {0} for mesh {1}"),
-				MeshData.Positions.Num(), FText::FromName(SharedResources->GetMeshName())));
-			return;
-		}
-		if (MeshData.Triangles.Num() < 3)
-		{
-			FMessageLog("RealtimeMesh").Error(FText::Format(
-				LOCTEXT("UpdateFromSimpleMeshData_InvalidTriangleCount", "Invalid triangle count {0} for mesh {1}"),
-				MeshData.Positions.Num(), FText::FromName(SharedResources->GetMeshName())));
-			return;
-		}
-
-		FRealtimeMeshStreamSet StreamSet;
-		StreamSet.AddStream(FRealtimeMeshStreams::Position, GetRealtimeMeshBufferLayout<FVector3f>());
-
-
-		StreamSet.AddStream(FRealtimeMeshStreams::Tangents,
-			MeshData.bUseHighPrecisionTangents? GetRealtimeMeshBufferLayout<TRealtimeMeshTangents<FPackedRGBA16N>>() : GetRealtimeMeshBufferLayout<TRealtimeMeshTangents<FPackedNormal>>());
-
-		const int32 NumUVChannels = MeshData.UV3.Num() > 0 ? 4 : MeshData.UV2.Num() > 0 ? 3 : MeshData.UV1.Num() > 0 ? 2 : 1;
-		StreamSet.AddStream(FRealtimeMeshStreams::TexCoords,
-			MeshData.bUseHighPrecisionTexCoords?
-				FRealtimeMeshBufferLayout(GetRealtimeMeshDataElementType<FVector2f>(), NumUVChannels) :
-				FRealtimeMeshBufferLayout(GetRealtimeMeshDataElementType<FVector2DHalf>(), NumUVChannels));
-
-		StreamSet.AddStream(FRealtimeMeshStreams::Color, GetRealtimeMeshBufferLayout<FColor>());
-
-		StreamSet.AddStream(FRealtimeMeshStreams::Triangles, GetRealtimeMeshBufferLayout<TIndex3<uint32>>());
-			//MeshData.Positions.Num() > TNumericLimits<uint16>::Max()? GetRealtimeMeshBufferLayout<TIndex3<uint32>>() : GetRealtimeMeshBufferLayout<TIndex3<uint16>>());
-
-		if (MeshData.MaterialIndex.Num() > 0)
-		{
-			StreamSet.AddStream(FRealtimeMeshStreams::PolyGroups, MeshData.MaterialIndex.Num() > TNumericLimits<uint16>::Max()? GetRealtimeMeshBufferLayout<uint32>() : GetRealtimeMeshBufferLayout<uint16>());
-		}
-
-		MeshData.CopyToStreamSet(StreamSet, false);		
-		SetAllStreams(Commands, MoveTemp(StreamSet));
-	}
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	void FRealtimeMeshSectionGroupSimple::RemoveStream(FRealtimeMeshProxyCommandBatch& Commands, const FRealtimeMeshStreamKey& StreamKey)
-	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
-
 		// Replace the stored stream
 		if (Streams.Remove(StreamKey) == 0)
 		{
@@ -405,10 +218,10 @@ namespace RealtimeMesh
 				              FText::FromString(StreamKey.ToString()), FText::FromName(SharedResources->GetMeshName())));
 		}
 
-		FRealtimeMeshSectionGroup::RemoveStream(Commands, StreamKey);
+		FRealtimeMeshSectionGroup::RemoveStream(UpdateContext, StreamKey);
 	}
 
-	void FRealtimeMeshSectionGroupSimple::SetAllStreams(FRealtimeMeshProxyCommandBatch& Commands, FRealtimeMeshStreamSet&& InStreams)
+	void FRealtimeMeshSectionGroupSimple::SetAllStreams(FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshStreamSet&& InStreams)
 	{
 		bool bWantsPolyGroupUpdate = false;
 		bool bWantsDepthOnlyPolyGroupUpdate = false;
@@ -431,43 +244,47 @@ namespace RealtimeMesh
 		// Block auto update of material indices until all streams are set		
 		// Defer updates for bulk changes like this
 		Simple::Private::bShouldDeferPolyGroupUpdates = true;
-		FRealtimeMeshSectionGroup::SetAllStreams(Commands, MoveTemp(InStreams));
+		FRealtimeMeshSectionGroup::SetAllStreams(UpdateContext, MoveTemp(InStreams));
 		Simple::Private::bShouldDeferPolyGroupUpdates = false;
 		
 		if (bWantsPolyGroupUpdate)
 		{
-			UpdatePolyGroupSections(Commands, false);
+			UpdatePolyGroupSections(UpdateContext, false);
 		}
 		else if (bWantsDepthOnlyPolyGroupUpdate)
 		{
-			UpdatePolyGroupSections(Commands, true);
+			UpdatePolyGroupSections(UpdateContext, true);
 		}		
 	}
 
-	void FRealtimeMeshSectionGroupSimple::InitializeProxy(FRealtimeMeshProxyCommandBatch& Commands)
+	void FRealtimeMeshSectionGroupSimple::InitializeProxy(FRealtimeMeshUpdateContext& UpdateContext)
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-
 		// We only send streams here, we rely on the base to send the sections
 		Streams.ForEach([&](const FRealtimeMeshStream& Stream)
-		{			
-			const auto UpdateData = MakeShared<FRealtimeMeshSectionGroupStreamUpdateData>(Stream);
-			UpdateData->ConfigureBuffer(EBufferUsageFlags::Static, true);
-
-			Commands.AddSectionGroupTask(Key, [UpdateData](FRealtimeMeshSectionGroupProxy& Proxy)
+		{
+			if (SharedResources->WantsStreamOnGPU(Stream.GetStreamKey()) && Stream.Num() > 0)
 			{
-				Proxy.CreateOrUpdateStream(UpdateData);
-			}, ShouldRecreateProxyOnStreamChange());
+				if (auto ProxyBuilder = UpdateContext.GetProxyBuilder())
+				{
+					FRealtimeMeshStream Copy(Stream);
+					const auto UpdateData = MakeShared<FRealtimeMeshSectionGroupStreamUpdateData>(MoveTemp(Copy), EBufferUsageFlags::Static);
+					UpdateData->CreateBufferAsyncIfPossible(UpdateContext);
+
+					ProxyBuilder->AddSectionGroupTask(Key, [UpdateData](FRHICommandListBase& RHICmdList, FRealtimeMeshSectionGroupProxy& Proxy)
+					{
+						Proxy.CreateOrUpdateStream(RHICmdList, UpdateData);
+					}, ShouldRecreateProxyOnChange(UpdateContext));
+				}
+			}
 		});
 
-		FRealtimeMeshSectionGroup::InitializeProxy(Commands);
+		FRealtimeMeshSectionGroup::InitializeProxy(UpdateContext);
 	}
 
-	void FRealtimeMeshSectionGroupSimple::Reset(FRealtimeMeshProxyCommandBatch& Commands)
+	void FRealtimeMeshSectionGroupSimple::Reset(FRealtimeMeshUpdateContext& UpdateContext)
 	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
 		Streams.Empty();
-		FRealtimeMeshSectionGroup::Reset(Commands);
+		FRealtimeMeshSectionGroup::Reset(UpdateContext);
 	}
 
 	bool FRealtimeMeshSectionGroupSimple::Serialize(FArchive& Ar)
@@ -482,50 +299,78 @@ namespace RealtimeMesh
 		return bResult;
 	}
 
-	bool FRealtimeMeshSectionGroupSimple::GenerateCollisionMesh(FRealtimeMeshTriMeshData& CollisionData)
+	bool FRealtimeMeshSectionGroupSimple::GenerateComplexCollision(const FRealtimeMeshLockContext& LockContext, FRealtimeMeshCollisionMesh& CollisionMesh) const
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-
-		bool bHasSectionData = false;
-		for (const auto& Section : Sections)
+		bool bHasMeshData = false;
+		for (const FRealtimeMeshSectionRef& Section : Sections)
 		{
-			bHasSectionData |= StaticCastSharedRef<FRealtimeMeshSectionSimple>(Section)->GenerateCollisionMesh(CollisionData);
+			const auto SimpleSection = StaticCastSharedRef<FRealtimeMeshSectionSimple>(Section);
+			if (SimpleSection->HasCollision(LockContext))
+			{
+				URealtimeMeshCollisionTools::AppendStreamsToCollisionMesh(CollisionMesh, Streams, SimpleSection->GetConfig(LockContext).MaterialSlot,
+					SimpleSection->GetStreamRange(LockContext).GetMinIndex() / REALTIME_MESH_NUM_INDICES_PER_PRIMITIVE,
+					SimpleSection->GetStreamRange(LockContext).NumPrimitives(REALTIME_MESH_NUM_INDICES_PER_PRIMITIVE));
+				bHasMeshData = true;
+			}
 		}
-		return bHasSectionData;
+
+		return bHasMeshData;
 	}
 
-	void FRealtimeMeshSectionGroupSimple::UpdatePolyGroupSections(FRealtimeMeshProxyCommandBatch& Commands, bool bUpdateDepthOnly)
+	void FRealtimeMeshSectionGroupSimple::UpdatePolyGroupSections(FRealtimeMeshUpdateContext& UpdateContext, bool bUpdateDepthOnly)
 	{
-		auto Result = bUpdateDepthOnly
-			? RealtimeMeshAlgo::GetStreamRangesFromPolyGroupsDepthOnly(Streams)
-			: RealtimeMeshAlgo::GetStreamRangesFromPolyGroups(Streams);
-		
-		if (Result)
+		if (ShouldCreateSingularSection())
 		{
-			// First update all the stream ranges
-			for (const auto Range : Result.GetValue())
-			{
-				const FRealtimeMeshSectionKey PolyGroupKey = FRealtimeMeshSectionKey::CreateForPolyGroup(Key, Range.Key);
-			
-				if (const auto Section = GetSectionAs<FRealtimeMeshSectionSimple>(PolyGroupKey))
-				{
-					Section->UpdateStreamRange(Commands, Range.Value);
-				}
-				else
-				{
-					const FRealtimeMeshSectionConfig SectionConfig = ConfigHandler.IsBound()? ConfigHandler.Execute(Range.Key) : FRealtimeMeshSectionConfig(ERealtimeMeshSectionDrawType::Static, Range.Key);				
-					CreateOrUpdateSection(Commands, PolyGroupKey, SectionConfig, Range.Value);
-				}
+			const FRealtimeMeshSectionKey PolyGroupKey = FRealtimeMeshSectionKey::CreateForPolyGroup(Key, 0);
+												
+			if (const auto Section = GetSectionAs<FRealtimeMeshSectionSimple>(UpdateContext, PolyGroupKey))
+			{				
+				Section->UpdateStreamRange(UpdateContext, GetValidStreamRange(UpdateContext));
 			}
-
-			for (FRealtimeMeshSectionKey SectionKey : GetSectionKeys())
+			else
 			{
-				check(Sections.Contains(SectionKey));
-				const auto& Section = *Sections.Find(SectionKey);
-				if (Section->GetKey().IsPolyGroupKey() && (Section->GetStreamRange().Vertices.IsEmpty() || Section->GetStreamRange().Indices.IsEmpty()))
+				const FRealtimeMeshSectionConfig SectionConfig = ConfigHandler.IsBound()
+					? ConfigHandler.Execute(0)
+					: FRealtimeMeshSectionConfig(0);
+				
+				CreateOrUpdateSection(UpdateContext, PolyGroupKey, SectionConfig, GetValidStreamRange(UpdateContext));
+			}
+		}
+		else
+		{
+			auto Result = bUpdateDepthOnly
+				? RealtimeMeshAlgo::GetStreamRangesFromPolyGroupsDepthOnly(Streams)
+				: RealtimeMeshAlgo::GetStreamRangesFromPolyGroups(Streams);
+		
+			if (Result)
+			{
+				// First update all the stream ranges
+				for (const auto Range : Result.GetValue())
 				{
-					// Drop this section as it's empty.
-					RemoveSection(Commands, SectionKey);
+					const FRealtimeMeshSectionKey PolyGroupKey = FRealtimeMeshSectionKey::CreateForPolyGroup(Key, Range.Key);
+			
+					if (const auto Section = GetSectionAs<FRealtimeMeshSectionSimple>(UpdateContext, PolyGroupKey))
+					{
+						Section->UpdateStreamRange(UpdateContext, Range.Value);
+					}
+					else
+					{
+						const FRealtimeMeshSectionConfig SectionConfig = ConfigHandler.IsBound()
+							? ConfigHandler.Execute(Range.Key)
+							: FRealtimeMeshSectionConfig(Range.Key);				
+						CreateOrUpdateSection(UpdateContext, PolyGroupKey, SectionConfig, Range.Value);
+					}
+				}
+
+				for (FRealtimeMeshSectionKey SectionKey : GetSectionKeys(UpdateContext))
+				{
+					check(Sections.Contains(SectionKey));
+					const auto& Section = *Sections.Find(SectionKey);
+					if (Section->GetKey(UpdateContext).IsPolyGroupKey() && (Section->GetStreamRange(UpdateContext).Vertices.IsEmpty() || Section->GetStreamRange(UpdateContext).Indices.IsEmpty()))
+					{
+						// Drop this section as it's empty.
+						RemoveSection(UpdateContext, SectionKey);
+					}
 				}
 			}
 		}
@@ -533,32 +378,103 @@ namespace RealtimeMesh
 
 	FRealtimeMeshSectionConfig FRealtimeMeshSectionGroupSimple::DefaultPolyGroupSectionHandler(int32 PolyGroupIndex) const
 	{
-		return FRealtimeMeshSectionConfig(ERealtimeMeshSectionDrawType::Static, PolyGroupIndex);
+		return FRealtimeMeshSectionConfig(PolyGroupIndex);
 	}
 
-
-	
-	bool FRealtimeMeshLODSimple::GenerateCollisionMesh(FRealtimeMeshTriMeshData& CollisionData)
+	bool FRealtimeMeshSectionGroupSimple::ShouldCreateSingularSection() const
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
+		return !Streams.Contains(FRealtimeMeshStreams::PolyGroups) && !Streams.Contains(FRealtimeMeshStreams::DepthOnlyPolyGroups) &&
+			(Sections.Num() == 0 || (Sections.Num() == 1 && Sections.Contains(FRealtimeMeshSectionKey::CreateForPolyGroup(Key, 0))));
+	}
 
+	bool FRealtimeMeshLODSimple::GenerateComplexCollision(const FRealtimeMeshLockContext& LockContext, FRealtimeMeshComplexGeometry& ComplexGeometry) const
+	{
 		bool bHasSectionData = false;
 		for (const auto& SectionGroup : SectionGroups)
 		{
-			bHasSectionData |= StaticCastSharedRef<FRealtimeMeshSectionGroupSimple>(SectionGroup)->GenerateCollisionMesh(CollisionData);
+			FRealtimeMeshCollisionMesh NewMesh;
+			const bool bHadData = StaticCastSharedRef<FRealtimeMeshSectionGroupSimple>(SectionGroup)->GenerateComplexCollision(LockContext, NewMesh);
+			if (bHadData)
+			{
+				ComplexGeometry.Add(MoveTemp(NewMesh));
+				bHasSectionData = true;
+			}
 		}
 		return bHasSectionData;
 	}
 
 
-	
 	FRealtimeMeshRef FRealtimeMeshSharedResourcesSimple::CreateRealtimeMesh() const
 	{
 		return MakeShared<FRealtimeMeshSimple>(ConstCastSharedRef<FRealtimeMeshSharedResources>(this->AsShared()));
 	}
 
 
-	
+	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey,
+		const FRealtimeMeshSectionGroupConfig& InConfig, bool bShouldAutoCreateSectionsForPolyGroups)
+	{
+		FRealtimeMeshUpdateBuilder UpdateBuilder;
+
+		UpdateBuilder.AddLODTask<FRealtimeMeshLODSimple>(SectionGroupKey, [SectionGroupKey, InConfig](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshLODSimple& LOD)
+		{
+			LOD.CreateOrUpdateSectionGroup(UpdateContext, SectionGroupKey, InConfig);
+		});
+
+		UpdateBuilder.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionGroupKey,
+			[bShouldAutoCreateSectionsForPolyGroups](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionGroupSimple& SectionGroup)
+		{
+			SectionGroup.SetShouldAutoCreateSectionsForPolyGroups(UpdateContext, bShouldAutoCreateSectionsForPolyGroups);
+		});
+
+		return UpdateBuilder.Commit(this->AsShared());
+	}
+
+	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, FRealtimeMeshStreamSet&& MeshData,
+		const FRealtimeMeshSectionGroupConfig& InConfig, bool bShouldAutoCreateSectionsForPolyGroups)
+	{
+		FRealtimeMeshUpdateBuilder UpdateBuilder;
+
+		UpdateBuilder.AddLODTask<FRealtimeMeshLODSimple>(SectionGroupKey, [SectionGroupKey, InConfig](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshLODSimple& LOD)
+		{
+			LOD.CreateOrUpdateSectionGroup(UpdateContext, SectionGroupKey, InConfig);
+		});
+
+		UpdateBuilder.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionGroupKey,
+			[bShouldAutoCreateSectionsForPolyGroups, MeshData = MoveTemp(MeshData)](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionGroupSimple& SectionGroup) mutable
+		{
+			SectionGroup.SetShouldAutoCreateSectionsForPolyGroups(UpdateContext, bShouldAutoCreateSectionsForPolyGroups);
+			SectionGroup.SetAllStreams(UpdateContext, MoveTemp(MeshData));
+		});
+
+		return UpdateBuilder.Commit(this->AsShared());
+	}
+
+	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshStreamSet& MeshData,
+		const FRealtimeMeshSectionGroupConfig& InConfig, bool bShouldAutoCreateSectionsForPolyGroups)
+	{
+		FRealtimeMeshStreamSet MeshDataCopy(MeshData);
+		return CreateSectionGroup(SectionGroupKey, MoveTemp(MeshDataCopy), InConfig, bShouldAutoCreateSectionsForPolyGroups);
+	}
+
+	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshSimple::UpdateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, FRealtimeMeshStreamSet&& MeshData)
+	{
+		FRealtimeMeshUpdateBuilder UpdateBuilder;
+
+		UpdateBuilder.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionGroupKey,
+			[MeshData = MoveTemp(MeshData)](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionGroupSimple& SectionGroup) mutable
+		{
+			SectionGroup.SetAllStreams(UpdateContext, MoveTemp(MeshData));
+		});
+
+		return UpdateBuilder.Commit(this->AsShared());
+	}
+
+	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshSimple::UpdateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshStreamSet& MeshData)
+	{
+		FRealtimeMeshStreamSet Copy(MeshData);
+		return UpdateSectionGroup(SectionGroupKey, MoveTemp(Copy));
+	}
+
 	FRealtimeMeshCollisionConfiguration FRealtimeMeshSimple::GetCollisionConfig() const
 	{
 		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
@@ -588,38 +504,38 @@ namespace RealtimeMesh
 	TFuture<ERealtimeMeshCollisionUpdateResult> FRealtimeMeshSimple::ClearCustomComplexMeshGeometry()
 	{
 		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
-		if (ComplexMeshGeometry.Num() > 0)
+		if (ComplexGeometry.NumMeshes() > 0)
 		{
-			ComplexMeshGeometry.Empty();
+			ComplexGeometry.Reset();
 			return MarkCollisionDirty();
 		}
 
 		return MakeFulfilledPromise<ERealtimeMeshCollisionUpdateResult>(ERealtimeMeshCollisionUpdateResult::Ignored).GetFuture();
 	}
 
-	TFuture<ERealtimeMeshCollisionUpdateResult> FRealtimeMeshSimple::SetCustomComplexMeshGeometry(FRealtimeMeshStreamSet&& InComplexMeshGeometry)
+	TFuture<ERealtimeMeshCollisionUpdateResult> FRealtimeMeshSimple::SetCustomComplexMeshGeometry(FRealtimeMeshComplexGeometry&& InComplexMeshGeometry)
 	{
 		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
-		ComplexMeshGeometry = MoveTemp(InComplexMeshGeometry);
+		ComplexGeometry = MoveTemp(InComplexMeshGeometry);
 		return MarkCollisionDirty();		
 	}
 
-	TFuture<ERealtimeMeshCollisionUpdateResult> FRealtimeMeshSimple::SetCustomComplexMeshGeometry(const FRealtimeMeshStreamSet& InComplexMeshGeometry)
+	TFuture<ERealtimeMeshCollisionUpdateResult> FRealtimeMeshSimple::SetCustomComplexMeshGeometry(const FRealtimeMeshComplexGeometry& InComplexMeshGeometry)
 	{
-		FRealtimeMeshStreamSet ComplexMeshGeometryCopy(InComplexMeshGeometry);
+		FRealtimeMeshComplexGeometry ComplexMeshGeometryCopy(InComplexMeshGeometry);
 		return SetCustomComplexMeshGeometry(MoveTemp(ComplexMeshGeometryCopy));
 	}
 
-	void FRealtimeMeshSimple::ProcessCustomComplexMeshGeometry(TFunctionRef<void(const FRealtimeMeshStreamSet&)> ProcessFunc) const
+	void FRealtimeMeshSimple::ProcessCustomComplexMeshGeometry(TFunctionRef<void(const FRealtimeMeshComplexGeometry&)> ProcessFunc) const
 	{
 		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-		ProcessFunc(ComplexMeshGeometry);
+		ProcessFunc(ComplexGeometry);
 	}
 
-	TFuture<ERealtimeMeshCollisionUpdateResult> FRealtimeMeshSimple::EditCustomComplexMeshGeometry(TFunctionRef<void(FRealtimeMeshStreamSet&)> EditFunc)
+	TFuture<ERealtimeMeshCollisionUpdateResult> FRealtimeMeshSimple::EditCustomComplexMeshGeometry(TFunctionRef<void(FRealtimeMeshComplexGeometry&)> EditFunc)
 	{
 		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
-		EditFunc(ComplexMeshGeometry);
+		EditFunc(ComplexGeometry);
 		return MarkCollisionDirty();
 	}
 
@@ -629,128 +545,58 @@ namespace RealtimeMesh
 		return DistanceField;
 	}
 
-	void FRealtimeMeshSimple::SetDistanceField(FRealtimeMeshProxyCommandBatch& Commands, FRealtimeMeshDistanceField&& InDistanceField)
+	void FRealtimeMeshSimple::SetDistanceField(FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshDistanceField&& InDistanceField)
 	{
 		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
 		DistanceField = FRealtimeMeshDistanceField(InDistanceField);
-		return FRealtimeMesh::SetDistanceField(Commands, MoveTemp(InDistanceField));
+		return FRealtimeMesh::SetDistanceField(UpdateContext, MoveTemp(InDistanceField));
 	}
 
-	void FRealtimeMeshSimple::ClearDistanceField(FRealtimeMeshProxyCommandBatch& Commands)
+	void FRealtimeMeshSimple::ClearDistanceField(FRealtimeMeshUpdateContext& UpdateContext)
 	{
 		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
 		DistanceField = FRealtimeMeshDistanceField();
-		return FRealtimeMesh::ClearDistanceField(Commands);
+		return FRealtimeMesh::ClearDistanceField(UpdateContext);
 	}
 
-	const FRealtimeMeshCardRepresentation* FRealtimeMeshSimple::GetCardRepresentation() const
+	const FRealtimeMeshCardRepresentation* FRealtimeMeshSimple::GetCardRepresentation(const FRealtimeMeshLockContext& LockContext) const
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 		return CardRepresentation.Get();
 	}
 
-	void FRealtimeMeshSimple::SetCardRepresentation(FRealtimeMeshProxyCommandBatch& Commands, FRealtimeMeshCardRepresentation&& InCardRepresentation)
+	void FRealtimeMeshSimple::SetCardRepresentation(FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshCardRepresentation&& InCardRepresentation)
 	{
 		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
 		CardRepresentation = MakeUnique<FRealtimeMeshCardRepresentation>(InCardRepresentation);
-		return FRealtimeMesh::SetCardRepresentation(Commands, MoveTemp(InCardRepresentation));
+		return FRealtimeMesh::SetCardRepresentation(UpdateContext, MoveTemp(InCardRepresentation));
 	}
 
-	void FRealtimeMeshSimple::ClearCardRepresentation(FRealtimeMeshProxyCommandBatch& Commands)
+	void FRealtimeMeshSimple::ClearCardRepresentation(FRealtimeMeshUpdateContext& UpdateContext)
 	{
 		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
 		CardRepresentation.Reset();
-		FRealtimeMesh::ClearCardRepresentation(Commands);
+		FRealtimeMesh::ClearCardRepresentation(UpdateContext);
 	}
 
-	bool FRealtimeMeshSimple::GenerateCollisionMesh(FRealtimeMeshTriMeshData& CollisionData)
+	bool FRealtimeMeshSimple::GenerateComplexCollision(const FRealtimeMeshLockContext& LockContext, FRealtimeMeshComplexGeometry& OutComplexGeometry) const
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-		if (ComplexMeshGeometry.Num() > 0)
-		{
-			const auto PositionStream = ComplexMeshGeometry.Find(FRealtimeMeshStreams::Position);
-			const auto TriangleStream = ComplexMeshGeometry.Find(FRealtimeMeshStreams::Triangles);
-			const auto TexCoordsStream = ComplexMeshGeometry.Find(FRealtimeMeshStreamKey(FRealtimeMeshStreams::TexCoords));
-
-			auto& CollisionVertices = CollisionData.GetVertices();
-			auto& CollisionUVs = CollisionData.GetUVs();
-			auto& CollisionMaterials = CollisionData.GetMaterials();
-			auto& CollisionTriangles = CollisionData.GetTriangles();
-
-			if (PositionStream && TriangleStream)
-			{
-				if (PositionStream->Num() >= 3 && (TriangleStream->Num() * TriangleStream->GetNumElements()) >= 3)
-				{
-					const int32 StartVertexIndex = CollisionVertices.Num();
-
-					// Copy in the vertices
-					const auto PositionsView = PositionStream->GetArrayView<FVector3f>();
-					CollisionVertices.Append(PositionsView.GetData(), PositionsView.Num());
-
-					if (TexCoordsStream)
-					{
-						CollisionUVs.SetNum(TexCoordsStream->GetNumElements());
-						for (int32 ChannelIndex = 0; ChannelIndex < TexCoordsStream->GetNumElements(); ChannelIndex++)
-						{
-							TRealtimeMeshStridedStreamBuilder<const FVector2d, void> UVData(*TexCoordsStream, ChannelIndex);
-							const int32 NumUVsToCopy = FMath::Min(UVData.Num(), PositionStream->Num());
-							auto& CollisionUVChannel = CollisionUVs[ChannelIndex];
-							CollisionUVChannel.SetNumUninitialized(NumUVsToCopy);
-							
-							for (int32 TexCoordIdx = 0; TexCoordIdx < NumUVsToCopy; TexCoordIdx++)
-							{
-								CollisionUVChannel[TexCoordIdx] = UVData[TexCoordIdx];
-							}
-
-							// Make sure the uv data is the same length as the position data
-							if (PositionStream->Num() > UVData.Num())
-							{
-								CollisionUVChannel.SetNumZeroed(PositionStream->Num());
-							}
-						}
-					}
-					else
-					{
-						// Zero fill a single channel since we didn't have valid UVs
-						CollisionUVs.SetNum(1);
-						CollisionUVs[0].SetNumZeroed(PositionStream->Num());
-					}
-
-					TRealtimeMeshStreamBuilder<const TIndex3<uint32>, void> TrianglesData(*TriangleStream);
-					CollisionTriangles.Reserve(TrianglesData.Num());
-					CollisionMaterials.Reserve(TrianglesData.Num());
-
-					for (int32 TriIdx = 0; TriIdx < TrianglesData.Num(); TriIdx++)
-					{
-						FTriIndices& Tri = CollisionTriangles.AddDefaulted_GetRef();
-						Tri.v0 = TrianglesData[TriIdx].GetElement(0).GetValue() + StartVertexIndex;
-						Tri.v1 = TrianglesData[TriIdx].GetElement(1).GetValue() + StartVertexIndex;
-						Tri.v2 = TrianglesData[TriIdx].GetElement(2).GetValue() + StartVertexIndex;
-
-						CollisionMaterials.Add(0 /* Material Slot */);
-					}
-					
-					return true;
-				}
-			}
-			
-			return false;			
-		}		
+		// Copy any custom complex geometry
+		OutComplexGeometry = ComplexGeometry;
 		
 		// TODO: Allow other LOD to be used for collision?
 		if (LODs.IsValidIndex(0))
 		{
-			return StaticCastSharedRef<FRealtimeMeshLODSimple>(LODs[0])->GenerateCollisionMesh(CollisionData);
+			return StaticCastSharedRef<FRealtimeMeshLODSimple>(LODs[0])->GenerateComplexCollision(LockContext, OutComplexGeometry);
 		}
 		return false;
 	}
 
-	void FRealtimeMeshSimple::InitializeProxy(FRealtimeMeshProxyCommandBatch& Commands) const
+	void FRealtimeMeshSimple::InitializeProxy(FRealtimeMeshUpdateContext& UpdateContext) const
 	{
-		FRealtimeMesh::InitializeProxy(Commands);
-		if (Commands)
+		FRealtimeMesh::InitializeProxy(UpdateContext);
+		if (auto ProxyBuilder = UpdateContext.GetProxyBuilder())
 		{
-			Commands.AddMeshTask([DistanceField = DistanceField](FRealtimeMeshProxy& Proxy) mutable
+			ProxyBuilder->AddMeshTask([DistanceField = DistanceField](FRHICommandListBase& RHICmdList, FRealtimeMeshProxy& Proxy) mutable
 			{
 				Proxy.SetDistanceField(MoveTemp(DistanceField));
 			});
@@ -758,7 +604,7 @@ namespace RealtimeMesh
 			if (CardRepresentation)
 			{
 				FRealtimeMeshCardRepresentation CardRepresentationCopy(*CardRepresentation);
-				Commands.AddMeshTask([CardRepresentation = MoveTemp(CardRepresentationCopy)](FRealtimeMeshProxy& Proxy) mutable
+				ProxyBuilder->AddMeshTask([CardRepresentation = MoveTemp(CardRepresentationCopy)](FRHICommandListBase& RHICmdList, FRealtimeMeshProxy& Proxy) mutable
 				{
 					Proxy.SetCardRepresentation(MoveTemp(CardRepresentation));
 				});
@@ -766,16 +612,26 @@ namespace RealtimeMesh
 		}
 	}
 
-	void FRealtimeMeshSimple::Reset(FRealtimeMeshProxyCommandBatch& Commands, bool bRemoveRenderProxy)
+	void FRealtimeMeshSimple::Reset(FRealtimeMeshUpdateContext& UpdateContext, bool bRemoveRenderProxy)
 	{
 		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
 		CollisionConfig = FRealtimeMeshCollisionConfiguration();
 		SimpleGeometry = FRealtimeMeshSimpleGeometry();
 		
-		FRealtimeMesh::Reset(Commands, bRemoveRenderProxy);
+		FRealtimeMesh::Reset(UpdateContext, bRemoveRenderProxy);
 
 		// Default it back to a single LOD.
-		InitializeLODs(Commands, {FRealtimeMeshLODConfig()});
+		InitializeLODs(UpdateContext, {FRealtimeMeshLODConfig()});
+	}
+
+	void FRealtimeMeshSimple::FinalizeUpdate(FRealtimeMeshUpdateContext& UpdateContext)
+	{
+		FRealtimeMesh::FinalizeUpdate(UpdateContext);
+		
+		if (UpdateContext.GetState<FRealtimeMeshSimpleUpdateState>().CollisionGroupDirtySet.HasAnyDirty())
+		{
+			MarkCollisionDirtyNoCallback();
+		}
 	}
 
 	bool FRealtimeMeshSimple::Serialize(FArchive& Ar, URealtimeMesh* Owner)
@@ -790,11 +646,17 @@ namespace RealtimeMesh
 
 		if (Ar.CustomVer(FRealtimeMeshVersion::GUID) >= FRealtimeMeshVersion::SimpleMeshStoresCustomComplexCollision)
 		{
-			int32 NumStreams = ComplexMeshGeometry.Num();
-			Ar << NumStreams;
-
-			if (Ar.IsLoading())
+			if (Ar.CustomVer(FRealtimeMeshVersion::GUID) >= FRealtimeMeshVersion::CollisionOverhaul)
 			{
+				Ar << ComplexGeometry;
+			}
+			else
+			{
+				check(Ar.IsLoading())
+				FRealtimeMeshStreamSet ComplexMeshGeometry;
+				int32 NumStreams = ComplexMeshGeometry.Num();
+				Ar << NumStreams;
+
 				ComplexMeshGeometry.Empty();
 				for (int32 Index = 0; Index < NumStreams; Index++)
 				{
@@ -806,15 +668,10 @@ namespace RealtimeMesh
 
 					ComplexMeshGeometry.AddStream(MoveTemp(Stream));
 				}
-			}
-			else
-			{
-				ComplexMeshGeometry.ForEach([&Ar](FRealtimeMeshStream& Stream)
-				{					
-					FRealtimeMeshStreamKey StreamKey = Stream.GetStreamKey();
-					Ar << StreamKey;
-					Ar << Stream;
-				});
+				
+				FRealtimeMeshCollisionMesh CollisionMesh;
+				URealtimeMeshCollisionTools::AppendStreamsToCollisionMesh(CollisionMesh, ComplexMeshGeometry, 0);
+				ComplexGeometry.Add(MoveTemp(CollisionMesh));
 			}
 		}
 
@@ -846,13 +703,18 @@ namespace RealtimeMesh
 
 		return bResult;
 	}
-
-	void FRealtimeMeshSimple::MarkForEndOfFrameUpdate() const
+	
+	void FRealtimeMeshSimple::MarkCollisionDirtyNoCallback() const
 	{
-		// ReSharper disable once CppExpressionWithoutSideEffects
-		SharedResources->GetEndOfFrameRequestHandler().ExecuteIfBound();
-	}
+		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources);
+		MarkForEndOfFrameUpdate();
 
+		if (!PendingCollisionPromise.IsValid())
+		{
+			PendingCollisionPromise = MakeShared<TPromise<ERealtimeMeshCollisionUpdateResult>>();
+		}
+	}
+	
 	TFuture<ERealtimeMeshCollisionUpdateResult> FRealtimeMeshSimple::MarkCollisionDirty() const
 	{
 		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources);
@@ -877,82 +739,57 @@ namespace RealtimeMesh
 		return NewReturnPromise->GetFuture();
 	}
 
-	void FRealtimeMeshSimple::MarkCollisionDirtyNoCallback() const
-	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources);
-		MarkForEndOfFrameUpdate();
-
-		if (!PendingCollisionPromise.IsValid())
-		{
-			PendingCollisionPromise = MakeShared<TPromise<ERealtimeMeshCollisionUpdateResult>>();
-		}
-	}
-
 	void FRealtimeMeshSimple::ProcessEndOfFrameUpdates()
 	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources);
-		if (PendingCollisionPromise.IsValid())
+		TSharedPtr<TPromise<ERealtimeMeshCollisionUpdateResult>> CollisionPromise;
 		{
-			const bool bAsyncCook = CollisionConfig.bUseAsyncCook;
+			FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources);
+			CollisionPromise = MoveTemp(PendingCollisionPromise);
+			PendingCollisionPromise.Reset();
+		}
+		
+		if (CollisionPromise.IsValid())
+		{
+			auto Promise = MoveTemp(*CollisionPromise);
 
-			auto CollisionData = MakeShared<FRealtimeMeshCollisionData>();
-			CollisionData->Config = CollisionConfig;
+			const int32 UpdateKey = GetNextCollisionUpdateVersion();
+			
+			const bool bAsyncCook = CollisionConfig.bUseAsyncCook;
+			const ERealtimeMeshThreadType AllowedGenerationThread = bAsyncCook ? ERealtimeMeshThreadType::AsyncThread : ERealtimeMeshThreadType::GameThread;
+
+			auto CollisionData = MakeShared<FRealtimeMeshCollisionInfo>();
+			CollisionData->Configuration = CollisionConfig;
 			CollisionData->SimpleGeometry = SimpleGeometry;
 			
-			auto ThisWeak = TWeakPtr<FRealtimeMeshSimple>(StaticCastSharedRef<FRealtimeMeshSimple>(this->AsShared()));
+			auto ThisWeak = StaticCastWeakPtr<FRealtimeMeshSimple>(this->AsWeak());
 
-			const bool bGenerateOnOtherThread = bAsyncCook && IsInGameThread();
-
-			auto GenerationPromise = MakeShared<TPromise<TSharedPtr<FRealtimeMeshCollisionData>>>();
-
-			auto GenerateMeshDataLambda = [ThisWeak, GenerationPromise, CollisionData]() mutable
-			{
-				FRealtimeMeshTriMeshData CollisionMesh;
+			DoOnAllowedThread(AllowedGenerationThread, [ThisWeak, CollisionData, ResultPromise = MoveTemp(Promise), UpdateKey]() mutable
+			{				
 				if (const auto ThisShared = ThisWeak.Pin())
 				{
-					if (ThisShared->GenerateCollisionMesh(CollisionMesh))
+					FRealtimeMeshAccessContext AccessContext(ThisShared.ToSharedRef());
+					FRealtimeMeshComplexGeometry TempComplexGeometry;
+					
+					if (ThisShared->GenerateComplexCollision(AccessContext, TempComplexGeometry))
 					{
-						CollisionData->ComplexGeometry = MoveTemp(CollisionMesh);
+						CollisionData->ComplexGeometry = MoveTemp(TempComplexGeometry);
 					}
-				}
-				GenerationPromise->SetValue(CollisionData);
-			};
 
+					auto CollisionUpdateFuture = ThisShared->UpdateCollision(MoveTemp(*CollisionData), UpdateKey);
 
-			if (bGenerateOnOtherThread)
-			{
-				AsyncTask(ENamedThreads::AnyThread, MoveTemp(GenerateMeshDataLambda));
-			}
-			else
-			{
-				GenerateMeshDataLambda();
-			}
-
-			GenerationPromise->GetFuture().Next([ThisWeak, ResultPromise = PendingCollisionPromise](const TSharedPtr<FRealtimeMeshCollisionData>& CollisionData) mutable
-			{
-				auto SendCollisionUpdate = [ThisWeak, ResultPromise, CollisionData]() mutable
-				{
-					if (const auto ThisShared = ThisWeak.Pin())
+					ContinueOnGameThread(MoveTemp(CollisionUpdateFuture), [ResultPromise = MoveTemp(ResultPromise)](TFuture<ERealtimeMeshCollisionUpdateResult>&& Result) mutable
 					{
-						ThisShared->UpdateCollision(MoveTemp(*CollisionData))
-						          .Next([ResultPromise](ERealtimeMeshCollisionUpdateResult Result)
-						          {
-							          ResultPromise->SetValue(Result);
-						          });
-					}
-				};
-
-				if (!IsInGameThread())
-				{
-					AsyncTask(ENamedThreads::GameThread, MoveTemp(SendCollisionUpdate));
+						ResultPromise.EmplaceValue(Result.Get());
+					});
 				}
 				else
 				{
-					SendCollisionUpdate();
+					DoOnGameThread([ResultPromise = MoveTemp(ResultPromise)]() mutable
+					{
+						ResultPromise.EmplaceValue(ERealtimeMeshCollisionUpdateResult::Ignored);
+					});
 				}
 			});
-
-			PendingCollisionPromise.Reset();
 		}
 		FRealtimeMesh::ProcessEndOfFrameUpdates();
 	}
@@ -962,320 +799,184 @@ namespace RealtimeMesh
 URealtimeMeshSimple::URealtimeMeshSimple(const FObjectInitializer& ObjectInitializer)
 	: URealtimeMesh(ObjectInitializer)
 {
-	Initialize(MakeShared<RealtimeMesh::FRealtimeMeshSharedResourcesSimple>());
-	MeshRef->InitializeLODs(RealtimeMesh::TFixedLODArray<FRealtimeMeshLODConfig>{FRealtimeMeshLODConfig()});
+	if (!IsTemplate())
+	{
+		Initialize(MakeShared<RealtimeMesh::FRealtimeMeshSharedResourcesSimple>());
+
+		FRealtimeMeshUpdateContext UpdateContext(GetMeshData());
+		MeshRef->InitializeLODs(UpdateContext, RealtimeMesh::TFixedLODArray<FRealtimeMeshLODConfig>{FRealtimeMeshLODConfig()});
+	}
+}
+
+URealtimeMeshSimple* URealtimeMeshSimple::InitializeRealtimeMeshSimple(URealtimeMeshComponent* Owner)
+{
+	if (IsValid(Owner))
+	{
+		return Owner->InitializeRealtimeMesh<URealtimeMeshSimple>();
+	}
+	return nullptr;
 }
 
 // ReSharper disable once CppMemberFunctionMayBeConst
-TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey)
+TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey,
+	const FRealtimeMeshSectionGroupConfig& InConfig, bool bShouldAutoCreateSectionsForPolyGroups)
 {
-	if (const auto LOD = GetMesh()->GetLODAs<FRealtimeMeshLODSimple>(SectionGroupKey.LOD()))
-	{
-		return LOD->CreateOrUpdateSectionGroup(SectionGroupKey);
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("CreateSectionGroup_InvalidLODKey", "CreateSectionGroup: Invalid LODKey key {0}"),
-						  FText::FromString(SectionGroupKey.LOD().ToString())));
-		return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
-	}
+	return GetMeshAs<FRealtimeMeshSimple>()->CreateSectionGroup(SectionGroupKey, InConfig, bShouldAutoCreateSectionsForPolyGroups);
 }
 
 // ReSharper disable once CppMemberFunctionMayBeConst
-TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, FRealtimeMeshStreamSet&& MeshData)
+TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, FRealtimeMeshStreamSet&& MeshData,
+	const FRealtimeMeshSectionGroupConfig& InConfig, bool bShouldAutoCreateSectionsForPolyGroups)
 {
-	if (const auto LOD = GetMesh()->GetLODAs<FRealtimeMeshLODSimple>(SectionGroupKey.LOD()))
-	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources.ToSharedRef());
-		FRealtimeMeshProxyCommandBatch Commands(SharedResources);
-		
-		LOD->CreateOrUpdateSectionGroup(Commands, SectionGroupKey);
-		const auto SectionGroup = LOD->GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>(SectionGroupKey);
-		SectionGroup->SetAllStreams(Commands, MoveTemp(MeshData));
-		return Commands.Commit();
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("CreateSectionGroup_InvalidLODKey", "CreateSectionGroup: Invalid LODKey key {0}"),
-						  FText::FromString(SectionGroupKey.LOD().ToString())));
-		return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
-	}
+	return GetMeshAs<FRealtimeMeshSimple>()->CreateSectionGroup(SectionGroupKey, MoveTemp(MeshData), InConfig, bShouldAutoCreateSectionsForPolyGroups);
 }
 
-TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshStreamSet& MeshData)
+// ReSharper disable once CppMemberFunctionMayBeConst
+TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshStreamSet& MeshData,
+	const FRealtimeMeshSectionGroupConfig& InConfig, bool bShouldAutoCreateSectionsForPolyGroups)
 {
-	FRealtimeMeshStreamSet MeshDataCopy(MeshData);
-	return CreateSectionGroup(SectionGroupKey, MoveTemp(MeshDataCopy));
+	return GetMeshAs<FRealtimeMeshSimple>()->CreateSectionGroup(SectionGroupKey, MeshData, InConfig, bShouldAutoCreateSectionsForPolyGroups);
 }
 
 // ReSharper disable once CppMemberFunctionMayBeConst
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::UpdateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, FRealtimeMeshStreamSet&& MeshData)
 {
-	if (const auto LOD = GetMesh()->GetLODAs<FRealtimeMeshLODSimple>(SectionGroupKey.LOD()))
-	{
-		if (const auto SectionGroup = LOD->GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>(SectionGroupKey))
-		{
-			return SectionGroup->SetAllStreams(MoveTemp(MeshData));
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(
-				FText::Format(LOCTEXT("UpdateSectionGroup_InvalidSectionGroupKey", "UpdateSectionGroup: Invalid SectionGroupKey key {0}"),
-							  FText::FromString(SectionGroupKey.ToString())));
-		}
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("UpdateSectionGroup_InvalidLODKey", "UpdateSectionGroup: Invalid LODKey key {0}"),
-						  FText::FromString(SectionGroupKey.LOD().ToString())));
-	}
-	return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
+	return GetMeshAs<FRealtimeMeshSimple>()->UpdateSectionGroup(SectionGroupKey, MoveTemp(MeshData));
 }
 
+// ReSharper disable once CppMemberFunctionMayBeConst
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::UpdateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshStreamSet& MeshData)
 {
-	FRealtimeMeshStreamSet Copy(MeshData);
-	return UpdateSectionGroup(SectionGroupKey, MoveTemp(Copy));
+	return GetMeshAs<FRealtimeMeshSimple>()->UpdateSectionGroup(SectionGroupKey, MeshData);
 }
-
-
-// ReSharper disable once CppMemberFunctionMayBeConst
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshSimpleMeshData& MeshData)
-{
-	if (const auto LOD = GetMesh()->GetLODAs<FRealtimeMeshLODSimple>(SectionGroupKey.LOD()))
-	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources.ToSharedRef());
-		FRealtimeMeshProxyCommandBatch Commands(SharedResources);
-		LOD->CreateOrUpdateSectionGroup(Commands, SectionGroupKey);
-		const auto SectionGroup = LOD->GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>(SectionGroupKey);
-		SectionGroup->UpdateFromSimpleMesh(Commands, MeshData);
-		return Commands.Commit();
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("CreateSectionGroup_InvalidLODKey", "CreateSectionGroup: Invalid LODKey key {0}"),
-						  FText::FromString(SectionGroupKey.LOD().ToString())));
-		return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
-	}
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-// ReSharper disable once CppMemberFunctionMayBeConst
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::UpdateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshSimpleMeshData& MeshData)
-{
-	if (const auto LOD = GetMesh()->GetLODAs<FRealtimeMeshLODSimple>(SectionGroupKey.LOD()))
-	{
-		if (const auto SectionGroup = LOD->GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>(SectionGroupKey))
-		{
-			return SectionGroup->UpdateFromSimpleMesh(MeshData);
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(
-				FText::Format(LOCTEXT("UpdateSectionGroup_InvalidSectionGroupKey", "UpdateSectionGroup: Invalid SectionGroupKey key {0}"),
-							  FText::FromString(SectionGroupKey.ToString())));
-		}
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("UpdateSectionGroup_InvalidLODKey", "UpdateSectionGroup: Invalid LODKey key {0}"),
-						  FText::FromString(SectionGroupKey.LOD().ToString())));
-	}
-	return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 // ReSharper disable once CppMemberFunctionMayBeConst
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::CreateSection(const FRealtimeMeshSectionKey& SectionKey,
 	const FRealtimeMeshSectionConfig& Config, const FRealtimeMeshStreamRange& StreamRange, bool bShouldCreateCollision)
 {
-	if (const auto LOD = GetMesh()->GetLODAs<FRealtimeMeshLODSimple>(SectionKey.LOD()))
-	{
-		if (const auto SectionGroup = LOD->GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>(SectionKey.SectionGroup()))
-		{
-			FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources.ToSharedRef());
-			FRealtimeMeshProxyCommandBatch Commands(SharedResources);
+	FRealtimeMeshUpdateBuilder UpdateBuilder;
 
-			SectionGroup->CreateOrUpdateSection(Commands, SectionKey, Config, StreamRange);
-			const auto Section = SectionGroup->GetSectionAs<FRealtimeMeshSectionSimple>(SectionKey);
-			Section->SetShouldCreateCollision(bShouldCreateCollision);
-
-			return Commands.Commit();
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(
-				FText::Format(LOCTEXT("CreateSection_InvalidSectionGroupKey", "CreateSection: Invalid SectionGroupKey key {0}"),
-							  FText::FromString(SectionKey.SectionGroup().ToString())));
-		}
-	}
-	else
+	UpdateBuilder.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionKey,
+		[SectionKey, Config, StreamRange](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionGroupSimple& SectionGroup)
 	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("CreateSection_InvalidLODKey", "CreateSection: Invalid LODKey key {0}"),
-						  FText::FromString(SectionKey.LOD().ToString())));
-	}
-	return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
+		SectionGroup.CreateOrUpdateSection(UpdateContext, SectionKey, Config, StreamRange);
+	});
+
+	UpdateBuilder.AddSectionTask<FRealtimeMeshSectionSimple>(SectionKey,
+		[bShouldCreateCollision](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionSimple& Section)
+	{
+		Section.SetShouldCreateCollision(UpdateContext, bShouldCreateCollision);			
+	});
+	
+	return UpdateBuilder.Commit(GetMeshData());
 }
 
 // ReSharper disable once CppMemberFunctionMayBeConst
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::UpdateSectionConfig(const FRealtimeMeshSectionKey& SectionKey, const FRealtimeMeshSectionConfig& Config, bool bShouldCreateCollision)
 {
-	if (const auto LOD = GetMesh()->GetLOD(SectionKey.LOD()))
-	{
-		if (const auto SectionGroup = LOD->GetSectionGroup(SectionKey.SectionGroup()))
-		{
-			if (const auto Section = SectionGroup->GetSectionAs<FRealtimeMeshSectionSimple>(SectionKey))
-			{
-				FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources.ToSharedRef());
-				FRealtimeMeshProxyCommandBatch Commands(SharedResources);
+	FRealtimeMeshUpdateBuilder UpdateBuilder;
 
-				Section->UpdateConfig(Commands, Config);
-				Section->SetShouldCreateCollision(bShouldCreateCollision);
-
-				return Commands.Commit();
-			}
-			else
-			{
-				FMessageLog("RealtimeMesh").Error(
-					FText::Format(LOCTEXT("UpdateSectionConfig_InvalidSectionKey", "UpdateSectionConfig: Invalid section key {0}"), FText::FromString(SectionKey.ToString())));
-			}
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(FText::Format(
-				LOCTEXT("UpdateSectionConfig_InvalidSectionGroupKey", "UpdateSectionConfig: Invalid section group key {0}"),
-				FText::FromString(SectionKey.SectionGroup().ToString())));
-		}
-	}
-	else
+	UpdateBuilder.AddSectionTask<FRealtimeMeshSectionSimple>(SectionKey,
+	[Config, bShouldCreateCollision](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionSimple& Section)
 	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("UpdateSectionConfig_InvalidLODKey", "UpdateSectionConfig: Invalid LOD key {0}"), FText::FromString(SectionKey.LOD().ToString())));
-	}
-	return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
+		Section.UpdateConfig(UpdateContext, Config);
+		Section.SetShouldCreateCollision(UpdateContext, bShouldCreateCollision);
+	});
+	
+	return UpdateBuilder.Commit(GetMeshData());
 }
 
 // ReSharper disable once CppMemberFunctionMayBeConst
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::UpdateSectionRange(const FRealtimeMeshSectionKey& SectionKey, const FRealtimeMeshStreamRange& StreamRange)
 {
-	if (const auto LOD = MeshRef->GetLOD(SectionKey.LOD()))
+	FRealtimeMeshUpdateBuilder UpdateBuilder;
+
+	UpdateBuilder.AddSectionTask<FRealtimeMeshSectionSimple>(SectionKey,
+	[StreamRange](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionSimple& Section)
 	{
-		if (const auto SectionGroup = LOD->GetSectionGroupAs<RealtimeMesh::FRealtimeMeshSectionGroupSimple>(SectionKey.SectionGroup()))
-		{
-			if (const auto Section = SectionGroup->GetSection(SectionKey))
-			{
-				return Section->UpdateStreamRange(StreamRange);
-			}
-			else
-			{
-				FMessageLog("RealtimeMesh").Error(
-					FText::Format(LOCTEXT("UpdateSectionInvalid", "Attempted to update invalid section {0} in Mesh:{1}"),
-								  FText::FromString(SectionKey.ToString()), FText::FromName(GetFName())));
-			}
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(
-				FText::Format(LOCTEXT("UpdateSectionInvalidSectionGroup", "Attempted to update section {0} in invalid section group in Mesh:{1}"),
-							  FText::FromString(SectionKey.ToString()), FText::FromName(GetFName())));
-		}
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("UpdateSectionInvalidLOD", "Attempted to update section in invalid LOD {0} in Mesh:{1}"),
-						  FText::FromString(SectionKey.LOD().ToString()), FText::FromName(GetFName())));
-	}
-	return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
+		Section.UpdateStreamRange(UpdateContext, StreamRange);
+	});
+	
+	return UpdateBuilder.Commit(GetMeshData());
 }
 
 TArray<FRealtimeMeshSectionGroupKey> URealtimeMeshSimple::GetSectionGroups(const FRealtimeMeshLODKey& LODKey) const
 {
+	FRealtimeMeshAccessor Accessor;
+
 	TArray<FRealtimeMeshSectionGroupKey> SectionGroups;
-	if (const auto LOD = GetMesh()->GetLODAs<FRealtimeMeshLODSimple>(LODKey))
+	
+	Accessor.AddLODTask<FRealtimeMeshLODSimple>(LODKey,
+	[&SectionGroups](const FRealtimeMeshLockContext& LockContext, const FRealtimeMeshLODSimple& LOD)
 	{
-		SectionGroups = LOD->GetSectionGroupKeys().Array();
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("GetSectionGroups_InvalidLODKey", "GetSectionGroups: Invalid LODKey key {0}"),
-						  FText::FromString(LODKey.ToString())));
-	}
+		SectionGroups = LOD.GetSectionGroupKeys(LockContext).Array();
+	});
+
+	Accessor.Execute(GetMeshData());
+	
 	return SectionGroups;
 }
 
 TSharedPtr<FRealtimeMeshSectionGroupSimple> URealtimeMeshSimple::GetSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey) const
 {
-	if (const auto LOD = GetMesh()->GetLODAs<FRealtimeMeshLODSimple>(SectionGroupKey.LOD()))
+	FRealtimeMeshAccessor Accessor;
+
+	TSharedPtr<FRealtimeMeshSectionGroupSimple> FoundSectionGroup;
+	
+	Accessor.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionGroupKey,
+	[&FoundSectionGroup](const FRealtimeMeshLockContext& LockContext, const FRealtimeMeshSectionGroupSimple& SectionGroup)
 	{
-		return LOD->GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>(SectionGroupKey);
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("GetSectionGroup_InvalidLODKey", "GetSectionGroups: Invalid LODKey key {0}"),
-						  FText::FromString(SectionGroupKey.LOD().ToString())));
-		return nullptr;
-	}
+		FoundSectionGroup = StaticCastSharedRef<FRealtimeMeshSectionGroupSimple, FRealtimeMeshSectionGroup>(const_cast<FRealtimeMeshSectionGroupSimple&>(SectionGroup).AsShared());
+	});
+
+	Accessor.Execute(GetMeshData());
+	
+	return FoundSectionGroup;
 }
 
-bool URealtimeMeshSimple::ProcessMesh(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const TFunctionRef<void(const FRealtimeMeshStreamSet&)>& ProcessFunc) const
+TArray<FRealtimeMeshSectionKey> URealtimeMeshSimple::GetSectionsInGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey)
 {	
-	if (const auto LOD = GetMesh()->GetLODAs<FRealtimeMeshLODSimple>(SectionGroupKey.LOD()))
+	FRealtimeMeshAccessor Accessor;
+
+	TArray<FRealtimeMeshSectionKey> Sections;
+	
+	Accessor.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionGroupKey,
+	[&Sections](const FRealtimeMeshLockContext& LockContext, const FRealtimeMeshSectionGroupSimple& SectionGroup)
 	{
-		if (const auto SectionGroup = LOD->GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>(SectionGroupKey))
-		{
-			SectionGroup->ProcessMeshData(ProcessFunc);
-			return true;
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(
-				FText::Format(LOCTEXT("CreateSection_InvalidSectionGroupKey", "CreateSection: Invalid SectionGroupKey key {0}"),
-							  FText::FromString(SectionGroupKey.ToString())));
-		}
-	}
-	else
+		Sections = SectionGroup.GetSectionKeys(LockContext).Array();
+	});
+
+	Accessor.Execute(GetMeshData());
+	
+	return Sections;
+}
+
+
+void URealtimeMeshSimple::ProcessMesh(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const TFunctionRef<void(const FRealtimeMeshStreamSet&)>& ProcessFunc) const
+{	
+	FRealtimeMeshAccessor Accessor;
+	
+	Accessor.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionGroupKey,
+	[&ProcessFunc](const FRealtimeMeshLockContext& LockContext, const FRealtimeMeshSectionGroupSimple& SectionGroup)
 	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("CreateSectionGroup_InvalidLODKey", "CreateSectionGroup: Invalid LODKey key {0}"),
-						  FText::FromString(SectionGroupKey.LOD().ToString())));
-	}
-	return false;
+		SectionGroup.ProcessMeshData(LockContext, ProcessFunc);
+	});
+
+	Accessor.Execute(GetMeshData());
 }
 
 // ReSharper disable once CppMemberFunctionMayBeConst
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::EditMeshInPlace(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const TFunctionRef<TSet<FRealtimeMeshStreamKey>(FRealtimeMeshStreamSet&)>& EditFunc)
 {
-	if (const auto LOD = GetMesh()->GetLODAs<FRealtimeMeshLODSimple>(SectionGroupKey.LOD()))
+	FRealtimeMeshUpdateBuilder UpdateBuilder;
+
+	UpdateBuilder.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionGroupKey,
+	[&EditFunc](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionGroupSimple& SectionGroup)
 	{
-		if (const auto SectionGroup = LOD->GetSectionGroupAs<FRealtimeMeshSectionGroupSimple>(SectionGroupKey))
-		{
-			return SectionGroup->EditMeshData(EditFunc);
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(
-				FText::Format(LOCTEXT("CreateSection_InvalidSectionGroupKey", "CreateSection: Invalid SectionGroupKey key {0}"),
-							  FText::FromString(SectionGroupKey.ToString())));
-		}
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("CreateSectionGroup_InvalidLODKey", "CreateSectionGroup: Invalid LODKey key {0}"),
-						  FText::FromString(SectionGroupKey.LOD().ToString())));
-	}
-	return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
+		SectionGroup.EditMeshData(UpdateContext, EditFunc);
+	});
+	
+	return UpdateBuilder.Commit(GetMeshData());
 }
 
 bool URealtimeMeshSimple::HasCustomComplexMeshGeometry() const
@@ -1288,52 +989,40 @@ TFuture<ERealtimeMeshCollisionUpdateResult> URealtimeMeshSimple::ClearCustomComp
 	return GetMeshAs<FRealtimeMeshSimple>()->ClearCustomComplexMeshGeometry();
 }
 
-TFuture<ERealtimeMeshCollisionUpdateResult> URealtimeMeshSimple::SetCustomComplexMeshGeometry(FRealtimeMeshStreamSet&& InComplexMeshGeometry)
+TFuture<ERealtimeMeshCollisionUpdateResult> URealtimeMeshSimple::SetCustomComplexMeshGeometry(FRealtimeMeshComplexGeometry&& InComplexMeshGeometry)
 {
 	return GetMeshAs<FRealtimeMeshSimple>()->SetCustomComplexMeshGeometry(MoveTemp(InComplexMeshGeometry));
 }
 
-TFuture<ERealtimeMeshCollisionUpdateResult> URealtimeMeshSimple::SetCustomComplexMeshGeometry(const FRealtimeMeshStreamSet& InComplexMeshGeometry)
+TFuture<ERealtimeMeshCollisionUpdateResult> URealtimeMeshSimple::SetCustomComplexMeshGeometry(const FRealtimeMeshComplexGeometry& InComplexMeshGeometry)
 {
 	return GetMeshAs<FRealtimeMeshSimple>()->SetCustomComplexMeshGeometry(InComplexMeshGeometry);
 }
 
-void URealtimeMeshSimple::ProcessCustomComplexMeshGeometry(TFunctionRef<void(const FRealtimeMeshStreamSet&)> ProcessFunc) const
+void URealtimeMeshSimple::ProcessCustomComplexMeshGeometry(TFunctionRef<void(const FRealtimeMeshComplexGeometry&)> ProcessFunc) const
 {
 	return GetMeshAs<FRealtimeMeshSimple>()->ProcessCustomComplexMeshGeometry(ProcessFunc);
 }
 
-TFuture<ERealtimeMeshCollisionUpdateResult> URealtimeMeshSimple::EditCustomComplexMeshGeometry(TFunctionRef<void(FRealtimeMeshStreamSet&)> EditFunc)
+TFuture<ERealtimeMeshCollisionUpdateResult> URealtimeMeshSimple::EditCustomComplexMeshGeometry(TFunctionRef<void(FRealtimeMeshComplexGeometry&)> EditFunc)
 {
 	return GetMeshAs<FRealtimeMeshSimple>()->EditCustomComplexMeshGeometry(EditFunc);
 }
 
-void URealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, URealtimeMeshStreamSet* MeshData,
-                                             const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
+void URealtimeMeshSimple::CreateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, URealtimeMeshStreamSet* MeshData, const FRealtimeMeshSimpleCompletionCallback& OnComplete)
 {
+	if (!IsValid(MeshData))
+	{
+		(void)OnComplete.ExecuteIfBound(ERealtimeMeshProxyUpdateStatus::NoUpdate);
+		return;
+	}
 	TFuture<ERealtimeMeshProxyUpdateStatus> Continuation = MeshData? CreateSectionGroup(SectionGroupKey, MeshData->GetStreamSet()) : CreateSectionGroup(SectionGroupKey);	
-	Continuation.Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
+	Continuation.Next([OnComplete](ERealtimeMeshProxyUpdateStatus Status)
 	{
-		if (CompletionCallback.IsBound())
-		{
-			CompletionCallback.Execute(Status);
-		}
+		ensure(IsInGameThread());
+		(void)OnComplete.ExecuteIfBound(Status);
 	});
 }
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-void URealtimeMeshSimple::CreateSectionGroupFromSimple(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshSimpleMeshData& MeshData,
-	const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
-{
-	CreateSectionGroup(SectionGroupKey, MeshData).Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
-	{
-		if (CompletionCallback.IsBound())
-		{
-			CompletionCallback.Execute(Status);
-		}
-	});
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FRealtimeMeshSectionGroupKey URealtimeMeshSimple::CreateSectionGroupUnique(const FRealtimeMeshLODKey& LODKey, URealtimeMeshStreamSet* MeshData,
                                                                            const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
@@ -1343,24 +1032,6 @@ FRealtimeMeshSectionGroupKey URealtimeMeshSimple::CreateSectionGroupUnique(const
 	return SectionGroupKey;
 }
 
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-FRealtimeMeshSectionGroupKey URealtimeMeshSimple::CreateSectionGroupUniqueFromSimple(const FRealtimeMeshLODKey& LODKey, const FRealtimeMeshSimpleMeshData& MeshData,
-	const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
-{
-	const FRealtimeMeshSectionGroupKey SectionGroupKey = FRealtimeMeshSectionGroupKey::CreateUnique(LODKey);
-	// ReSharper disable once CppDeprecatedEntity
-	CreateSectionGroup(SectionGroupKey, MeshData).Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
-	{
-		if (CompletionCallback.IsBound())
-		{
-			CompletionCallback.Execute(Status);
-		}
-	});
-	return SectionGroupKey;
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 void URealtimeMeshSimple::UpdateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey, URealtimeMeshStreamSet* MeshData,
                                              const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
 {
@@ -1368,60 +1039,26 @@ void URealtimeMeshSimple::UpdateSectionGroup(const FRealtimeMeshSectionGroupKey&
 	{
 		UpdateSectionGroup(SectionGroupKey, MeshData->GetStreamSet()).Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
 		{
-			if (CompletionCallback.IsBound())
-			{
-				CompletionCallback.Execute(Status);
-			}
+			(void)CompletionCallback.ExecuteIfBound(Status);
 		});
 	}
 	else
 	{
+		FEditorScriptExecutionGuard ScriptGuard;
 		if (CompletionCallback.IsBound())
 		{
-			CompletionCallback.Execute(ERealtimeMeshProxyUpdateStatus::NoUpdate);
+			(void)CompletionCallback.ExecuteIfBound(ERealtimeMeshProxyUpdateStatus::NoUpdate);
 		}
 	}
 }
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-void URealtimeMeshSimple::UpdateSectionGroupFromSimple(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshSimpleMeshData& MeshData,
-	const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
-{
-	// ReSharper disable once CppDeprecatedEntity
-	UpdateSectionGroup(SectionGroupKey, MeshData).Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
-	{
-		if (CompletionCallback.IsBound())
-		{
-			CompletionCallback.Execute(Status);
-		}
-	});
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void URealtimeMeshSimple::CreateSection(const FRealtimeMeshSectionKey& SectionKey, const FRealtimeMeshSectionConfig& Config, const FRealtimeMeshStreamRange& StreamRange,
 	bool bShouldCreateCollision, const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
 {
 	CreateSection(SectionKey, Config, StreamRange, bShouldCreateCollision).Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
 	{
-		if (CompletionCallback.IsBound())
-		{
-			CompletionCallback.Execute(Status);
-		}
+		(void)CompletionCallback.ExecuteIfBound(Status);
 	});
-}
-
-FRealtimeMeshSectionKey URealtimeMeshSimple::CreateSectionUnique(const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshSectionConfig& Config,
-	const FRealtimeMeshStreamRange& StreamRange, bool bShouldCreateCollision, const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
-{
-	const FRealtimeMeshSectionKey SectionKey = FRealtimeMeshSectionKey::CreateUnique(SectionGroupKey);
-	CreateSection(SectionKey, Config, StreamRange, bShouldCreateCollision).Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
-	{
-		if (CompletionCallback.IsBound())
-		{
-			CompletionCallback.Execute(Status);
-		}
-	});
-	return SectionKey;
 }
 
 void URealtimeMeshSimple::UpdateSectionConfig(const FRealtimeMeshSectionKey& SectionKey, const FRealtimeMeshSectionConfig& Config, bool bShouldCreateCollision,
@@ -1430,10 +1067,7 @@ void URealtimeMeshSimple::UpdateSectionConfig(const FRealtimeMeshSectionKey& Sec
 	UpdateSectionConfig(SectionKey, Config, bShouldCreateCollision)
 		.Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
 		{
-			if (CompletionCallback.IsBound())
-			{
-				CompletionCallback.Execute(Status);
-			}
+			(void)CompletionCallback.ExecuteIfBound(Status);
 		});
 }
 
@@ -1442,10 +1076,7 @@ void URealtimeMeshSimple::RemoveSection(const FRealtimeMeshSectionKey& SectionKe
 	RemoveSection(SectionKey)
 		.Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
 		{
-			if (CompletionCallback.IsBound())
-			{
-				CompletionCallback.Execute(Status);
-			}
+			(void)CompletionCallback.ExecuteIfBound(Status);
 		});
 }
 
@@ -1454,103 +1085,80 @@ void URealtimeMeshSimple::RemoveSectionGroup(const FRealtimeMeshSectionGroupKey&
 	RemoveSectionGroup(SectionGroupKey)
 		.Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
 		{
-			if (CompletionCallback.IsBound())
-			{
-				CompletionCallback.Execute(Status);
-			}
+			(void)CompletionCallback.ExecuteIfBound(Status);
 		});
+}
+
+void URealtimeMeshSimple::SetShouldAutoCreateSectionsForPolyGroups(const FRealtimeMeshSectionGroupKey& SectionGroupKey, bool bNewValue)
+{
+	FRealtimeMeshUpdateBuilder UpdateBuilder;
+
+	UpdateBuilder.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionGroupKey,
+	[&bNewValue](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionGroupSimple& SectionGroup)
+	{
+		SectionGroup.SetShouldAutoCreateSectionsForPolyGroups(UpdateContext, bNewValue);
+	});
+	
+	UpdateBuilder.Commit(GetMeshData());
+}
+
+bool URealtimeMeshSimple::ShouldAutoCreateSectionsForPolygonGroups(const FRealtimeMeshSectionGroupKey& SectionGroupKey) const
+{
+	bool bShouldAutoCreateSections = true;
+	
+	FRealtimeMeshAccessor Accessor;
+	Accessor.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionGroupKey,
+	[&bShouldAutoCreateSections](const FRealtimeMeshLockContext& LockContext, const FRealtimeMeshSectionGroupSimple& SectionGroup)
+	{
+		bShouldAutoCreateSections = SectionGroup.ShouldAutoCreateSectionsForPolygonGroups(LockContext);
+	});
+	Accessor.Execute(GetMeshData());
+	
+	return bShouldAutoCreateSections;
 }
 
 FRealtimeMeshSectionConfig URealtimeMeshSimple::GetSectionConfig(const FRealtimeMeshSectionKey& SectionKey) const
 {
-	if (const auto LOD = GetMesh()->GetLOD(SectionKey.LOD()))
+	FRealtimeMeshSectionConfig Config;
+	
+	FRealtimeMeshAccessor Accessor;
+	Accessor.AddSectionTask<FRealtimeMeshSectionSimple>(SectionKey,
+	[&Config](const FRealtimeMeshLockContext& LockContext, const FRealtimeMeshSectionSimple& Section)
 	{
-		if (const auto SectionGroup = LOD->GetSectionGroup(SectionKey.SectionGroup()))
-		{
-			if (const auto Section = SectionGroup->GetSection(SectionKey))
-			{
-				return Section->GetConfig();
-			}
-			else
-			{
-				FMessageLog("RealtimeMesh").Error(
-					FText::Format(LOCTEXT("GetSectionConfig_InvalidSectionKey", "GetSectionConfig: Invalid section key {0}"), FText::FromString(SectionKey.ToString())));
-			}
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(FText::Format(
-				LOCTEXT("GetSectionConfig_InvalidSectionGroupKey", "GetSectionConfig: Invalid section group key {0}"), FText::FromString(SectionKey.SectionGroup().ToString())));
-		}
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("GetSectionConfig_InvalidLODKey", "GetSectionConfig: Invalid LOD key {0}"), FText::FromString(SectionKey.LOD().ToString())));
-	}
-	return FRealtimeMeshSectionConfig();
+		Config = Section.GetConfig(LockContext);
+	});
+	Accessor.Execute(GetMeshData());
+	
+	return Config;
 }
 
 bool URealtimeMeshSimple::IsSectionVisible(const FRealtimeMeshSectionKey& SectionKey) const
 {
-	if (const auto LOD = GetMesh()->GetLOD(SectionKey.LOD()))
+	bool bIsVisible = false;
+	
+	FRealtimeMeshAccessor Accessor;
+	Accessor.AddSectionTask<FRealtimeMeshSectionSimple>(SectionKey,
+	[&bIsVisible](const FRealtimeMeshLockContext& LockContext, const FRealtimeMeshSectionSimple& Section)
 	{
-		if (const auto SectionGroup = LOD->GetSectionGroup(SectionKey.SectionGroup()))
-		{
-			if (const auto Section = SectionGroup->GetSection(SectionKey))
-			{
-				return Section->IsVisible();
-			}
-			else
-			{
-				FMessageLog("RealtimeMesh").Error(
-					FText::Format(LOCTEXT("IsSectionVisible_InvalidSectionKey", "IsSectionVisible: Invalid section key {0}"), FText::FromString(SectionKey.ToString())));
-			}
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(FText::Format(
-				LOCTEXT("IsSectionVisible_InvalidSectionGroupKey", "IsSectionVisible: Invalid section group key {0}"), FText::FromString(SectionKey.SectionGroup().ToString())));
-		}
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("IsSectionVisible_InvalidLODKey", "IsSectionVisible: Invalid LOD key {0}"), FText::FromString(SectionKey.LOD().ToString())));
-	}
-	return false;
+		bIsVisible = Section.IsVisible(LockContext);
+	});
+	Accessor.Execute(GetMeshData());
+	
+	return bIsVisible;
 }
 
 // ReSharper disable once CppMemberFunctionMayBeConst
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::SetSectionVisibility(const FRealtimeMeshSectionKey& SectionKey, bool bIsVisible)
 {
-	if (const auto LOD = GetMesh()->GetLOD(SectionKey.LOD()))
+	FRealtimeMeshUpdateBuilder UpdateBuilder;
+
+	UpdateBuilder.AddSectionTask<FRealtimeMeshSectionSimple>(SectionKey,
+	[bIsVisible](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionSimple& Section)
 	{
-		if (const auto SectionGroup = LOD->GetSectionGroup(SectionKey.SectionGroup()))
-		{
-			if (const auto Section = SectionGroup->GetSection(SectionKey))
-			{
-				return Section->SetVisibility(bIsVisible);
-			}
-			else
-			{
-				FMessageLog("RealtimeMesh").Error(FText::Format(
-					LOCTEXT("SetSectionVisibility_InvalidSectionKey", "SetSectionVisibility: Invalid section key {0}"), FText::FromString(SectionKey.ToString())));
-			}
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(FText::Format(
-				LOCTEXT("SetSectionVisibility_InvalidSectionGroupKey", "SetSectionVisibility: Invalid section group key {0}"),
-				FText::FromString(SectionKey.SectionGroup().ToString())));
-		}
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("SetSectionVisibility_InvalidLODKey", "SetSectionVisibility: Invalid LOD key {0}"), FText::FromString(SectionKey.LOD().ToString())));
-	}
-	return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
+		Section.SetVisibility(UpdateContext, bIsVisible);
+	});
+	
+	return UpdateBuilder.Commit(GetMeshData());
 }
 
 void URealtimeMeshSimple::SetSectionVisibility(const FRealtimeMeshSectionKey& SectionKey, bool bIsVisible, const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
@@ -1558,74 +1166,37 @@ void URealtimeMeshSimple::SetSectionVisibility(const FRealtimeMeshSectionKey& Se
 	SetSectionVisibility(SectionKey, bIsVisible)
 		.Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
 		{
-			if (CompletionCallback.IsBound())
-			{
-				CompletionCallback.Execute(Status);
-			}
+			(void)CompletionCallback.ExecuteIfBound(Status);
 		});
 }
 
 bool URealtimeMeshSimple::IsSectionCastingShadow(const FRealtimeMeshSectionKey& SectionKey) const
 {
-	if (const auto LOD = GetMesh()->GetLOD(SectionKey.LOD()))
+	bool bIsCastingShadow = false;
+	
+	FRealtimeMeshAccessor Accessor;
+	Accessor.AddSectionTask<FRealtimeMeshSectionSimple>(SectionKey,
+	[&bIsCastingShadow](const FRealtimeMeshLockContext& LockContext, const FRealtimeMeshSectionSimple& Section)
 	{
-		if (const auto SectionGroup = LOD->GetSectionGroup(SectionKey.SectionGroup()))
-		{
-			if (const auto Section = SectionGroup->GetSection(SectionKey))
-			{
-				return Section->IsCastingShadow();
-			}
-			else
-			{
-				FMessageLog("RealtimeMesh").Error(FText::Format(
-					LOCTEXT("IsSectionCastingShadow_InvalidSectionKey", "IsSectionCastingShadow: Invalid section key {0}"), FText::FromString(SectionKey.ToString())));
-			}
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(FText::Format(
-				LOCTEXT("IsSectionCastingShadow_InvalidSectionGroupKey", "IsSectionCastingShadow: Invalid section group key {0}"),
-				FText::FromString(SectionKey.SectionGroup().ToString())));
-		}
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("IsSectionCastingShadow_InvalidLODKey", "IsSectionCastingShadow: Invalid LOD key {0}"), FText::FromString(SectionKey.LOD().ToString())));
-	}
-	return false;
+		bIsCastingShadow = Section.IsCastingShadow(LockContext);
+	});
+	Accessor.Execute(GetMeshData());
+	
+	return bIsCastingShadow;
 }
 
 // ReSharper disable once CppMemberFunctionMayBeConst
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::SetSectionCastShadow(const FRealtimeMeshSectionKey& SectionKey, bool bCastShadow)
 {
-	if (const auto LOD = GetMesh()->GetLOD(SectionKey.LOD()))
+	FRealtimeMeshUpdateBuilder UpdateBuilder;
+
+	UpdateBuilder.AddSectionTask<FRealtimeMeshSectionSimple>(SectionKey,
+	[bCastShadow](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionSimple& Section)
 	{
-		if (const auto SectionGroup = LOD->GetSectionGroup(SectionKey.SectionGroup()))
-		{
-			if (const auto Section = SectionGroup->GetSection(SectionKey))
-			{
-				return Section->SetCastShadow(bCastShadow);
-			}
-			else
-			{
-				FMessageLog("RealtimeMesh").Error(FText::Format(
-					LOCTEXT("SetSectionCastShadow_InvalidSectionKey", "SetSectionCastShadow: Invalid section key {0}"), FText::FromString(SectionKey.ToString())));
-			}
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(FText::Format(
-				LOCTEXT("SetSectionCastShadow_InvalidSectionGroupKey", "SetSectionCastShadow: Invalid section group key {0}"),
-				FText::FromString(SectionKey.SectionGroup().ToString())));
-		}
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("SetSectionCastShadow_InvalidLODKey", "SetSectionCastShadow: Invalid LOD key {0}"), FText::FromString(SectionKey.LOD().ToString())));
-	}
-    return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
+		Section.SetCastShadow(UpdateContext, bCastShadow);
+	});
+	
+	return UpdateBuilder.Commit(GetMeshData());
 }
 
 void URealtimeMeshSimple::SetSectionCastShadow(const FRealtimeMeshSectionKey& SectionKey, bool bCastShadow, const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
@@ -1633,49 +1204,36 @@ void URealtimeMeshSimple::SetSectionCastShadow(const FRealtimeMeshSectionKey& Se
 	SetSectionCastShadow(SectionKey, bCastShadow)
 		.Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
 		{
-			if (CompletionCallback.IsBound())
-			{
-				CompletionCallback.Execute(Status);
-			}
+			(void)CompletionCallback.ExecuteIfBound(Status);
 		});
 }
 
 // ReSharper disable once CppMemberFunctionMayBeConst
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::RemoveSection(const FRealtimeMeshSectionKey& SectionKey)
 {
-	if (const auto LOD = GetMesh()->GetLOD(SectionKey.LOD()))
+	FRealtimeMeshUpdateBuilder UpdateBuilder;
+
+	UpdateBuilder.AddSectionGroupTask<FRealtimeMeshSectionGroupSimple>(SectionKey,
+	[SectionKey](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshSectionGroupSimple& SectionGroup)
 	{
-		if (const auto SectionGroup = LOD->GetSectionGroup(SectionKey.SectionGroup()))
-		{
-			return SectionGroup->RemoveSection(SectionKey);
-		}
-		else
-		{
-			FMessageLog("RealtimeMesh").Error(FText::Format(
-				LOCTEXT("RemoveSection_InvalidSectionGroupKey", "RemoveSection: Invalid section group key {0}"), FText::FromString(SectionKey.SectionGroup().ToString())));
-		}
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("RemoveSection_InvalidLODKey", "RemoveSection: Invalid LOD key {0}"), FText::FromString(SectionKey.LOD().ToString())));
-	}
-    return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
+		SectionGroup.RemoveSection(UpdateContext, SectionKey);
+	});
+	
+	return UpdateBuilder.Commit(GetMeshData());
 }
 
 // ReSharper disable once CppMemberFunctionMayBeConst
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::RemoveSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey)
 {
-	if (const auto LOD = GetMesh()->GetLOD(SectionGroupKey.LOD()))
+	FRealtimeMeshUpdateBuilder UpdateBuilder;
+
+	UpdateBuilder.AddLODTask<FRealtimeMeshLODSimple>(SectionGroupKey,
+	[SectionGroupKey](FRealtimeMeshUpdateContext& UpdateContext, FRealtimeMeshLODSimple& LOD)
 	{
-		return LOD->RemoveSectionGroup(SectionGroupKey);
-	}
-	else
-	{
-		FMessageLog("RealtimeMesh").Error(
-			FText::Format(LOCTEXT("RemoveSectionGroup_InvalidLODKey", "RemoveSectionGroup: Invalid LOD key {0}"), FText::FromString(SectionGroupKey.LOD().ToString())));
-		return MakeFulfilledPromise<ERealtimeMeshProxyUpdateStatus>(ERealtimeMeshProxyUpdateStatus::NoUpdate).GetFuture();
-	}
+		LOD.RemoveSectionGroup(UpdateContext, SectionGroupKey);
+	});
+	
+	return UpdateBuilder.Commit(GetMeshData());
 }
 
 const FRealtimeMeshDistanceField& URealtimeMeshSimple::GetDistanceField() const
@@ -1685,7 +1243,9 @@ const FRealtimeMeshDistanceField& URealtimeMeshSimple::GetDistanceField() const
 
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::SetDistanceField(FRealtimeMeshDistanceField&& InDistanceField)
 {
-	return GetMeshAs<FRealtimeMeshSimple>()->SetDistanceField(MoveTemp(InDistanceField));
+	FRealtimeMeshUpdateContext UpdateContext(GetMesh());
+	GetMeshAs<FRealtimeMeshSimple>()->SetDistanceField(UpdateContext, MoveTemp(InDistanceField));
+	return UpdateContext.Commit();
 }
 
 void URealtimeMeshSimple::SetDistanceField(const FRealtimeMeshDistanceField& InDistanceField, const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
@@ -1694,26 +1254,27 @@ void URealtimeMeshSimple::SetDistanceField(const FRealtimeMeshDistanceField& InD
 	SetDistanceField(MoveTemp(Copy))
 		.Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
 		{
-			if (CompletionCallback.IsBound())
-			{
-				CompletionCallback.Execute(Status);
-			}
+			(void)CompletionCallback.ExecuteIfBound(Status);
 		});
 }
 
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::ClearDistanceField()
 {
-	return GetMeshAs<FRealtimeMeshSimple>()->ClearDistanceField();
+	FRealtimeMeshUpdateContext UpdateContext(GetMesh());
+	GetMeshAs<FRealtimeMeshSimple>()->ClearDistanceField(UpdateContext);
+	return UpdateContext.Commit();
 }
 
-const FRealtimeMeshCardRepresentation* URealtimeMeshSimple::GetCardRepresentation() const
+const FRealtimeMeshCardRepresentation* URealtimeMeshSimple::GetCardRepresentation(const FRealtimeMeshLockContext& LockContext) const
 {
-	return GetMeshAs<FRealtimeMeshSimple>()->GetCardRepresentation();
+	return GetMeshAs<FRealtimeMeshSimple>()->GetCardRepresentation(LockContext);
 }
 
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::SetCardRepresentation(FRealtimeMeshCardRepresentation&& InCardRepresentation)
 {
-	return GetMeshAs<FRealtimeMeshSimple>()->SetCardRepresentation(MoveTemp(InCardRepresentation));
+	FRealtimeMeshUpdateContext UpdateContext(GetMesh());
+	GetMeshAs<FRealtimeMeshSimple>()->SetCardRepresentation(UpdateContext, MoveTemp(InCardRepresentation));
+	return UpdateContext.Commit();
 }
 
 void URealtimeMeshSimple::SetCardRepresentation(const FRealtimeMeshCardRepresentation& InCardRepresentation, const FRealtimeMeshSimpleCompletionCallback& CompletionCallback)
@@ -1722,16 +1283,15 @@ void URealtimeMeshSimple::SetCardRepresentation(const FRealtimeMeshCardRepresent
 	SetCardRepresentation(MoveTemp(Copy))
 		.Next([CompletionCallback](ERealtimeMeshProxyUpdateStatus Status)
 		{
-			if (CompletionCallback.IsBound())
-			{
-				CompletionCallback.Execute(Status);
-			}
+			(void)CompletionCallback.ExecuteIfBound(Status);
 		});
 }
 
 TFuture<ERealtimeMeshProxyUpdateStatus> URealtimeMeshSimple::ClearCardRepresentation()
 {
-	return GetMeshAs<FRealtimeMeshSimple>()->ClearCardRepresentation();
+	FRealtimeMeshUpdateContext UpdateContext(GetMesh());
+	GetMeshAs<FRealtimeMeshSimple>()->ClearCardRepresentation(UpdateContext);
+	return UpdateContext.Commit();
 }
 
 FRealtimeMeshCollisionConfiguration URealtimeMeshSimple::GetCollisionConfig() const
@@ -1750,10 +1310,7 @@ void URealtimeMeshSimple::SetCollisionConfig(const FRealtimeMeshCollisionConfigu
 	SetCollisionConfig(InCollisionConfig)
 		.Next([CompletionCallback](ERealtimeMeshCollisionUpdateResult Status)
 		{
-			if (CompletionCallback.IsBound())
-			{
-				CompletionCallback.Execute(Status);
-			}
+			(void)CompletionCallback.ExecuteIfBound(Status);
 		});
 }
 
@@ -1773,10 +1330,7 @@ void URealtimeMeshSimple::SetSimpleGeometry(const FRealtimeMeshSimpleGeometry& I
 	SetSimpleGeometry(InSimpleGeometry)
 		.Next([CompletionCallback](ERealtimeMeshCollisionUpdateResult Status)
 		{
-			if (CompletionCallback.IsBound())
-			{
-				CompletionCallback.Execute(Status);
-			}
+			(void)CompletionCallback.ExecuteIfBound(Status);
 		});
 }
 
@@ -1788,9 +1342,22 @@ void URealtimeMeshSimple::Reset(bool bCreateNewMeshData)
 void URealtimeMeshSimple::PostDuplicate(bool bDuplicateForPIE)
 {
 	Super::PostDuplicate(bDuplicateForPIE);
-	StaticCastSharedPtr<FRealtimeMeshSimple>(MeshRef)->MarkCollisionDirtyNoCallback();
+
+	if (!IsTemplate())
+	{
+		StaticCastSharedPtr<FRealtimeMeshSimple>(MeshRef)->MarkCollisionDirtyNoCallback();
+	}
 }
 
+void URealtimeMeshSimple::PostLoad()
+{
+	Super::PostLoad();
+}
+
+void URealtimeMeshSimple::PostLoadSubobjects(FObjectInstancingGraph* OuterInstanceGraph)
+{
+	Super::PostLoadSubobjects(OuterInstanceGraph);
+}
 
 
 #undef LOCTEXT_NAMESPACE

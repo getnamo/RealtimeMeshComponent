@@ -1,4 +1,4 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+﻿// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 
 #pragma once
@@ -89,12 +89,12 @@ namespace RealtimeMesh
 		{
 			if constexpr (bAllowSubstreamAccess)
 			{
-				BufferType StreamData = *reinterpret_cast<BufferType*>(Context.Stream.GetDataRawAtVertex(Index) + Context.ElementOffset);
+				BufferType StreamData = *reinterpret_cast<const BufferType*>(Context.Stream.GetDataRawAtVertex(Index) + Context.ElementOffset);
 				return ConvertRealtimeMeshType<BufferType, AccessType>(StreamData);
 			}
 			else
 			{
-				BufferType StreamData = *reinterpret_cast<BufferType*>(Context.Stream.GetDataRawAtVertex(Index));
+				BufferType StreamData = *reinterpret_cast<const BufferType*>(Context.Stream.GetDataRawAtVertex(Index));
 				return ConvertRealtimeMeshType<BufferType, AccessType>(StreamData);				
 			}
 		}
@@ -202,11 +202,11 @@ namespace RealtimeMesh
 		{
 			if constexpr (bAllowSubstreamAccess)
 			{
-				return *reinterpret_cast<StreamElementType*>(Context.Stream.GetDataRawAtVertex(Index) + Context.ElementOffset + Context.Stream.GetElementStride() * ElementIndex);
+				return *reinterpret_cast<const StreamElementType*>(Context.Stream.GetDataRawAtVertex(Index) + Context.ElementOffset + Context.Stream.GetElementStride() * ElementIndex);
 			}
 			else
 			{
-				return *reinterpret_cast<StreamElementType*>(Context.Stream.GetDataRawAtVertex(Index) + Context.Stream.GetElementStride() * ElementIndex);
+				return *reinterpret_cast<const StreamElementType*>(Context.Stream.GetDataRawAtVertex(Index) + Context.Stream.GetElementStride() * ElementIndex);
 			}
 		}
 		static void SetElementValue(const TContext& Context, int32 Index, int32 ElementIndex, const StreamElementType& InValue)
@@ -1047,7 +1047,7 @@ namespace RealtimeMesh
 	template <typename IndexType = uint32, typename TangentElementType = FPackedNormal, typename TexCoordElementType = FVector2DHalf, int32 NumTexCoords = 1, typename PolyGroupIndexType = uint16>
 	struct TRealtimeMeshBuilderLocal
 	{
-		using TriangleType = TIndex3<uint32>;
+		using TriangleAccessType = TIndex3<uint32>;
 		using TangentAccessType = TRealtimeMeshTangents<FVector4f>;
 		using TexCoordAccessType = TRealtimeMeshTexCoords<FVector2f, NumTexCoords>;
 
@@ -1055,7 +1055,7 @@ namespace RealtimeMesh
 		using TangentStreamType = typename TRealtimeMeshPromoteTypeIfNotVoid<TangentElementType, TRealtimeMeshTangents<TangentElementType>>::Type;
 		using TexCoordStreamType = typename TRealtimeMeshPromoteTypeIfNotVoid<TexCoordElementType, TRealtimeMeshTexCoords<TexCoordElementType, NumTexCoords>>::Type;
 
-		using TriangleStreamBuilder = TRealtimeMeshStreamBuilder<TriangleType, TriangleStreamType>;
+		using TriangleStreamBuilder = TRealtimeMeshStreamBuilder<TriangleAccessType, TriangleStreamType>;
 		using PositionStreamBuilder = TRealtimeMeshStreamBuilder<FVector3f, FVector3f>;
 		using TangentStreamBuilder = TRealtimeMeshStreamBuilder<TangentAccessType, TangentStreamType>;
 		using TexCoordStreamBuilder = TRealtimeMeshStridedStreamBuilder<TexCoordAccessType, TexCoordStreamType>;
@@ -1149,8 +1149,9 @@ namespace RealtimeMesh
 			, Tangents(GetStreamBuilder<TangentAccessType, TangentStreamType>(FRealtimeMeshStreams::Tangents))
 			, TexCoords(GetStreamBuilder<TexCoordAccessType, TexCoordStreamType, true>(FRealtimeMeshStreams::TexCoords))
 			, Colors(GetStreamBuilder<FColor>(FRealtimeMeshStreams::Color))
-			, Triangles(GetStreamBuilder<TriangleType, TriangleStreamType>(FRealtimeMeshStreams::Triangles, true, GetRealtimeMeshBufferLayout<TIndex3<uint16>>())->GetStream())
-			, DepthOnlyTriangles(GetStreamBuilder<TriangleType, TriangleStreamType>(FRealtimeMeshStreams::DepthOnlyTriangles))
+			, Triangles(GetStreamBuilder<TriangleAccessType, TriangleStreamType>(FRealtimeMeshStreams::Triangles, true,
+				GetRealtimeMeshBufferLayout<typename TRealtimeMeshUseTypeOrDefaultIfVoid<TriangleStreamType, TIndex3<uint16>>::Type>())->GetStream())
+			, DepthOnlyTriangles(GetStreamBuilder<TriangleAccessType, TriangleStreamType>(FRealtimeMeshStreams::DepthOnlyTriangles))
 			, TrianglePolyGroups(GetStreamBuilder<uint32, PolyGroupIndexType>(FRealtimeMeshStreams::PolyGroups))
 			, DepthOnlyTrianglePolyGroups(GetStreamBuilder<uint32, PolyGroupIndexType>(FRealtimeMeshStreams::DepthOnlyPolyGroups))
 		{
@@ -1312,7 +1313,7 @@ namespace RealtimeMesh
 						
 			if (!DepthOnlyTriangles.IsSet())
 			{
-				DepthOnlyTriangles = GetStreamBuilder<TriangleType, TriangleStreamType>(FRealtimeMeshStreams::DepthOnlyTriangles, true, GetRealtimeMeshBufferLayout(ElementType, 3), true);
+				DepthOnlyTriangles = GetStreamBuilder<TriangleAccessType, TriangleStreamType>(FRealtimeMeshStreams::DepthOnlyTriangles, true, GetRealtimeMeshBufferLayout(ElementType, 3), true);
 				Streams.AddStreamToLinkPool("DepthOnlyTriangles", FRealtimeMeshStreams::DepthOnlyTriangles);
 			}
 

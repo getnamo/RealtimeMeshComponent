@@ -1,8 +1,10 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+﻿// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #include "Data/RealtimeMeshLOD.h"
 #include "Data/RealtimeMeshShared.h"
 #include "Data/RealtimeMeshSectionGroup.h"
+#include "Core/RealtimeMeshLODConfig.h"
+#include "Data/RealtimeMeshUpdateBuilder.h"
 #include "RenderProxy/RealtimeMeshLODProxy.h"
 #include "RenderProxy/RealtimeMeshProxyCommandBatch.h"
 #if RMC_ENGINE_ABOVE_5_2
@@ -13,160 +15,99 @@
 
 namespace RealtimeMesh
 {
-	FRealtimeMeshLODData::FRealtimeMeshLODData(const FRealtimeMeshSharedResourcesRef& InSharedResources, const FRealtimeMeshLODKey& InKey)
+	FRealtimeMeshLOD::FRealtimeMeshLOD(const FRealtimeMeshSharedResourcesRef& InSharedResources, const FRealtimeMeshLODKey& InKey)
 		: SharedResources(InSharedResources)
-		  , Key(InKey)
+		, Key(InKey)
 	{
-		SharedResources->OnSectionGroupBoundsChanged().AddRaw(this, &FRealtimeMeshLODData::HandleSectionGroupBoundsChanged);
 	}
 
-	FRealtimeMeshLODData::~FRealtimeMeshLODData()
+	bool FRealtimeMeshLOD::HasSectionGroups(const FRealtimeMeshLockContext& LockContext) const
 	{
-		SharedResources->OnSectionGroupBoundsChanged().RemoveAll(this);
-	}
-
-	bool FRealtimeMeshLODData::HasSectionGroups() const
-	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 		return SectionGroups.Num() > 0;
 	}
 
-	FRealtimeMeshSectionGroupPtr FRealtimeMeshLODData::GetSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey) const
+	FRealtimeMeshSectionGroupPtr FRealtimeMeshLOD::GetSectionGroup(const FRealtimeMeshLockContext& LockContext, const FRealtimeMeshSectionGroupKey& SectionGroupKey) const
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 		return SectionGroups.Contains(SectionGroupKey) ? *SectionGroups.Find(SectionGroupKey) : FRealtimeMeshSectionGroupPtr();
 	}
 
-	FBoxSphereBounds3f FRealtimeMeshLODData::GetLocalBounds() const
+	TOptional<FBoxSphereBounds3f> FRealtimeMeshLOD::GetLocalBounds(const FRealtimeMeshLockContext& LockContext) const
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-		return Bounds.GetBounds([&]() { return CalculateBounds(); });
+		return Bounds.Get();
 	}
 
-	void FRealtimeMeshLODData::Initialize(FRealtimeMeshProxyCommandBatch& Commands, const FRealtimeMeshLODConfig& InConfig)
+	void FRealtimeMeshLOD::Initialize(FRealtimeMeshUpdateContext& UpdateContext, const FRealtimeMeshLODConfig& InConfig)
 	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
 		Config = InConfig;
 		Bounds.Reset();
 
-		if (Commands)
-		{
-			InitializeProxy(Commands);
-		}
+		InitializeProxy(UpdateContext);
 	}
 
-	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshLODData::Reset()
+	void FRealtimeMeshLOD::Reset(FRealtimeMeshUpdateContext& UpdateContext)
 	{
-		FRealtimeMeshProxyCommandBatch Commands(SharedResources->GetOwner());
-		Reset(Commands);
-		return Commands.Commit();
-	}
-
-	void FRealtimeMeshLODData::Reset(FRealtimeMeshProxyCommandBatch& Commands)
-	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
-
-		const auto SectionGroupsToRemove = GetSectionGroupKeys();
+		const auto SectionGroupsToRemove = GetSectionGroupKeys(UpdateContext);
 
 		Config = FRealtimeMeshLODConfig();
 		SectionGroups.Empty();
 		Bounds.Reset();
 
-		if (Commands)
-		{
-			InitializeProxy(Commands);
-		}
+		InitializeProxy(UpdateContext);
 
-		SharedResources->BroadcastLODConfigChanged(Key);
-		SharedResources->BroadcastLODBoundsChanged(Key);
-		SharedResources->BroadcastSectionGroupChanged(SectionGroupsToRemove, ERealtimeMeshChangeType::Removed);
+		UpdateContext.GetState().ConfigDirtyTree.Flag(Key);
+		UpdateContext.GetState().BoundsDirtyTree.Flag(Key);
 	}
 
-	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshLODData::UpdateConfig(const FRealtimeMeshLODConfig& InConfig)
+	void FRealtimeMeshLOD::UpdateConfig(FRealtimeMeshUpdateContext& UpdateContext, const FRealtimeMeshLODConfig& InConfig)
 	{
-		FRealtimeMeshProxyCommandBatch Commands(SharedResources->GetOwner());
-		UpdateConfig(Commands, InConfig);
-		return Commands.Commit();
-	}
-
-	void FRealtimeMeshLODData::UpdateConfig(FRealtimeMeshProxyCommandBatch& Commands, const FRealtimeMeshLODConfig& InConfig)
-	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
 		Config = InConfig;
 
-		if (Commands)
+		if (auto ProxyBuilder = UpdateContext.GetProxyBuilder())
 		{
-			Commands.AddLODTask(Key, [Config = Config](FRealtimeMeshLODProxy& Proxy)
+			ProxyBuilder->AddLODTask(Key, [Config = Config](FRHICommandListBase& RHICmdList, FRealtimeMeshLODProxy& Proxy)
 			{
 				Proxy.UpdateConfig(Config);
-			}, ShouldRecreateProxyOnChange());
+			}, ShouldRecreateProxyOnChange(UpdateContext));
 		}
 
-		SharedResources->BroadcastLODConfigChanged(Key);
+		UpdateContext.GetState().ConfigDirtyTree.Flag(Key);
 	}
-
-	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshLODData::CreateOrUpdateSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey)
+	
+	void FRealtimeMeshLOD::CreateOrUpdateSectionGroup(FRealtimeMeshUpdateContext& UpdateContext, const FRealtimeMeshSectionGroupKey& SectionGroupKey, const FRealtimeMeshSectionGroupConfig& InConfig)
 	{
-		FRealtimeMeshProxyCommandBatch Commands(SharedResources->GetOwner());
-		CreateOrUpdateSectionGroup(Commands, SectionGroupKey);
-		return Commands.Commit();
-	}
-
-	void FRealtimeMeshLODData::CreateOrUpdateSectionGroup(FRealtimeMeshProxyCommandBatch& Commands, const FRealtimeMeshSectionGroupKey& SectionGroupKey)
-	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
-
 		if (!SectionGroups.Contains(SectionGroupKey))
 		{
 			SectionGroups.Add(SharedResources->CreateSectionGroup(SectionGroupKey));
 
-			if (Commands)
+			if (auto ProxyBuilder = UpdateContext.GetProxyBuilder())
 			{
-				Commands.AddLODTask(Key, [SectionGroupKey](FRealtimeMeshLODProxy& Proxy)
+				ProxyBuilder->AddLODTask(Key, [SectionGroupKey](FRHICommandListBase& RHICmdList, FRealtimeMeshLODProxy& Proxy)
 				{
 					Proxy.CreateSectionGroupIfNotExists(SectionGroupKey);
 				});
-
-				(*SectionGroups.Find(SectionGroupKey))->InitializeProxy(Commands);
 			}
 		}
-		else
-		{
-			const auto& SectionGroup = *SectionGroups.Find(SectionGroupKey);
-			SectionGroup->Reset(Commands);
-		}
 
-		SharedResources->BroadcastSectionGroupChanged(SectionGroupKey, ERealtimeMeshChangeType::Added);
-		SharedResources->BroadcastSectionGroupBoundsChanged(SectionGroupKey);
+		const auto& SectionGroup = *SectionGroups.Find(SectionGroupKey);
+		SectionGroup->Initialize(UpdateContext, InConfig);
 	}
 
-	TFuture<ERealtimeMeshProxyUpdateStatus> FRealtimeMeshLODData::RemoveSectionGroup(const FRealtimeMeshSectionGroupKey& SectionGroupKey)
+	void FRealtimeMeshLOD::RemoveSectionGroup(FRealtimeMeshUpdateContext& UpdateContext, const FRealtimeMeshSectionGroupKey& SectionGroupKey)
 	{
-		FRealtimeMeshProxyCommandBatch Commands(SharedResources->GetOwner());
-		RemoveSectionGroup(Commands, SectionGroupKey);
-		return Commands.Commit();
-	}
-
-	void FRealtimeMeshLODData::RemoveSectionGroup(FRealtimeMeshProxyCommandBatch& Commands, const FRealtimeMeshSectionGroupKey& SectionGroupKey)
-	{
-		FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
-
 		if (SectionGroups.Remove(SectionGroupKey))
 		{
-			if (Commands)
+			if (auto ProxyBuilder = UpdateContext.GetProxyBuilder())
 			{
-				Commands.AddLODTask(Key, [SectionGroupKey](FRealtimeMeshLODProxy& Proxy)
+				ProxyBuilder->AddLODTask(Key, [SectionGroupKey](FRHICommandListBase& RHICmdList, FRealtimeMeshLODProxy& Proxy)
 				{
 					Proxy.RemoveSectionGroup(SectionGroupKey);
-				}, ShouldRecreateProxyOnChange());
+				}, ShouldRecreateProxyOnChange(UpdateContext));
 			}
 		}
-
-		SharedResources->BroadcastSectionGroupChanged(SectionGroupKey, ERealtimeMeshChangeType::Removed);
 	}
 
 
-	bool FRealtimeMeshLODData::Serialize(FArchive& Ar)
+	bool FRealtimeMeshLOD::Serialize(FArchive& Ar)
 	{
 		int32 NumSectionGroups = SectionGroups.Num();
 		Ar << NumSectionGroups;
@@ -203,7 +144,7 @@ namespace RealtimeMesh
 		{
 			for (const auto& SectionGroup : SectionGroups)
 			{
-				FName SectionGroupName = SectionGroup->GetKey().Name();
+				FName SectionGroupName = SectionGroup->GetKey_AssumesLocked().Name();
 				Ar << SectionGroupName;
 				SectionGroup->Serialize(Ar);
 			}
@@ -214,65 +155,85 @@ namespace RealtimeMesh
 		return true;
 	}
 
-	void FRealtimeMeshLODData::InitializeProxy(FRealtimeMeshProxyCommandBatch& Commands)
+	void FRealtimeMeshLOD::InitializeProxy(FRealtimeMeshUpdateContext& UpdateContext)
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-
-		Commands.AddLODTask(Key, [Config = Config](FRealtimeMeshLODProxy& Proxy)
+		if (auto ProxyBuilder = UpdateContext.GetProxyBuilder())
 		{
-			Proxy.UpdateConfig(Config);
-		}, ShouldRecreateProxyOnChange());
-		
-		for (const auto& SectionGroup : SectionGroups)
-		{
-			Commands.AddLODTask(Key, [SectionGroupKey = SectionGroup->GetKey()](FRealtimeMeshLODProxy& Proxy)
+			ProxyBuilder->AddLODTask(Key, [Config = Config](FRHICommandListBase& RHICmdList, FRealtimeMeshLODProxy& Proxy)
 			{
-				Proxy.CreateSectionGroupIfNotExists(SectionGroupKey);
-			}, ShouldRecreateProxyOnChange());
+				Proxy.UpdateConfig(Config);
+			}, ShouldRecreateProxyOnChange(UpdateContext));
+		
+			for (const auto& SectionGroup : SectionGroups)
+			{
+				ProxyBuilder->AddLODTask(Key, [SectionGroupKey = SectionGroup->GetKey(UpdateContext)](FRHICommandListBase& RHICmdList, FRealtimeMeshLODProxy& Proxy)
+				{
+					Proxy.CreateSectionGroupIfNotExists(SectionGroupKey);
+				}, ShouldRecreateProxyOnChange(UpdateContext));
 
-			SectionGroup->InitializeProxy(Commands);
+				SectionGroup->InitializeProxy(UpdateContext);
+			}
 		}
 	}
 
 
-	TSet<FRealtimeMeshSectionGroupKey> FRealtimeMeshLODData::GetSectionGroupKeys() const
+	TSet<FRealtimeMeshSectionGroupKey> FRealtimeMeshLOD::GetSectionGroupKeys(const FRealtimeMeshLockContext& LockContext) const
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
 		TSet<FRealtimeMeshSectionGroupKey> SectionGroupKeys;
 		for (const auto& SectionGroup : SectionGroups)
 		{
-			SectionGroupKeys.Add(SectionGroup->GetKey());
+			SectionGroupKeys.Add(SectionGroup->GetKey(LockContext));
 		}
 		return SectionGroupKeys;
 	}
 
-
-	FBoxSphereBounds3f FRealtimeMeshLODData::CalculateBounds() const
+	void FRealtimeMeshLOD::FinalizeUpdate(FRealtimeMeshUpdateContext& UpdateContext)
 	{
-		FRealtimeMeshScopeGuardRead ScopeGuard(SharedResources->GetGuard());
-		TOptional<FBoxSphereBounds3f> NewBounds;
 		for (const auto& SectionGroup : SectionGroups)
 		{
-			if (!NewBounds.IsSet())
-			{
-				NewBounds = SectionGroup->GetLocalBounds();
-				continue;
-			}
-			NewBounds = *NewBounds + SectionGroup->GetLocalBounds();
+			SectionGroup->FinalizeUpdate(UpdateContext);
 		}
-
-		return NewBounds.IsSet() ? *NewBounds : FBoxSphereBounds3f(FSphere3f(FVector3f::ZeroVector, 1.0f));
-	}
-
-	void FRealtimeMeshLODData::HandleSectionGroupBoundsChanged(const FRealtimeMeshSectionGroupKey& RealtimeMeshSectionGroupKey)
-	{
-		if (RealtimeMeshSectionGroupKey.IsPartOf(Key))
+		
+		// Update bounds
+		if (UpdateContext.GetState().BoundsDirtyTree.IsDirty(Key) && !Bounds.HasUserSetBounds())
 		{
-			FRealtimeMeshScopeGuardWrite ScopeGuard(SharedResources->GetGuard());
-			Bounds.ClearCachedValue();
-			SharedResources->BroadcastLODBoundsChanged(Key);
+			TOptional<FBoxSphereBounds3f> NewBounds;
+			for (const auto& SectionGroup : SectionGroups)
+			{
+				auto SectionGroupBounds = SectionGroup->GetLocalBounds(UpdateContext);
+				if (SectionGroupBounds.IsSet())
+				{
+					if (!NewBounds.IsSet())
+					{
+						NewBounds = *SectionGroupBounds;
+						continue;
+					}
+					NewBounds = *NewBounds + *SectionGroupBounds;
+				}
+			}
+
+			if (NewBounds)
+			{
+				Bounds.SetComputedBounds(*NewBounds);
+			}
+			else
+			{
+				Bounds.ClearCachedValue();
+			}
+
+			UpdateContext.GetState().bNeedsBoundsUpdate = true;
 		}
 	}
+
+	void FRealtimeMeshLOD::MarkBoundsDirtyIfNotOverridden(FRealtimeMeshUpdateContext& UpdateContext)
+	{
+		Bounds.ClearCachedValue();
+		if (!Bounds.HasUserSetBounds())
+		{
+			UpdateContext.GetState().BoundsDirtyTree.Flag(Key);
+		}
+	}
+
 
 }
 

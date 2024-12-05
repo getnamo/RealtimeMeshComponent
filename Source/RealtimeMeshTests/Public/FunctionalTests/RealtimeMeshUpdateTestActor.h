@@ -1,4 +1,4 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+﻿// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "RealtimeMeshUpdateTestActor.generated.h"
 
 class URealtimeMeshSimple;
+
 UCLASS()
 class REALTIMEMESHTESTS_API ARealtimeMeshUpdateTestActor : public ARealtimeMeshActor
 {
@@ -24,6 +25,6 @@ public:
 	// Sets default values for this actor's properties
 	ARealtimeMeshUpdateTestActor();
 
-	virtual void OnGenerateMesh_Implementation() override;
+	virtual void OnConstruction(const FTransform& Transform) override;
 
 };

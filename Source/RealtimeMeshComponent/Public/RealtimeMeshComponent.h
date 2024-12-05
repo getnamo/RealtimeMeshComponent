@@ -1,4 +1,4 @@
-// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
@@ -17,8 +17,8 @@ class REALTIMEMESHCOMPONENT_API URealtimeMeshComponent : public UMeshComponent
 	GENERATED_BODY()
 
 private:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = RealtimeMesh, Meta = (AllowPrivateAccess = "true", DisplayName = "Runtime Mesh"))
-	TObjectPtr<URealtimeMesh> RealtimeMeshReference;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Replicated, Category = RealtimeMesh, Meta = (AllowPrivateAccess = "true", DisplayName = "RealtimeMesh", ReplicatedUsing="OnRep_RealtimeMesh"))
+	TObjectPtr<URealtimeMesh> RealtimeMesh;
 
 public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "RealtimeMesh")
@@ -30,7 +30,7 @@ public:
 	void SetRealtimeMesh(URealtimeMesh* NewMesh);
 
 	UFUNCTION(BlueprintCallable, Category = "Components|RealtimeMeshComponent", meta=(DeterminesOutputType="MeshClass"))
-	URealtimeMesh* InitializeRealtimeMesh(TSubclassOf<URealtimeMesh> MeshClass);
+	URealtimeMesh* InitializeRealtimeMesh(UPARAM(meta = (AllowAbstract = "false")) TSubclassOf<URealtimeMesh> MeshClass);
 
 	template <typename MeshType>
 	MeshType* InitializeRealtimeMesh(TSubclassOf<URealtimeMesh> MeshClass = MeshType::StaticClass())
@@ -42,9 +42,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Components|RealtimeMeshComponent")
 	FORCEINLINE URealtimeMesh* GetRealtimeMesh() const
 	{
-		if (RealtimeMeshReference && RealtimeMeshReference->IsValidLowLevel())
+		if (RealtimeMesh && RealtimeMesh->IsValidLowLevel())
 		{
-			return RealtimeMeshReference;
+			return RealtimeMesh;
 		}
 		return nullptr;
 	}
@@ -52,12 +52,15 @@ public:
 	template<typename RealtimeMeshType>
 	FORCEINLINE RealtimeMeshType* GetRealtimeMeshAs() const
 	{
-		if (RealtimeMeshReference && RealtimeMeshReference->IsValidLowLevel())
+		if (RealtimeMesh && RealtimeMesh->IsValidLowLevel())
 		{
-			return CastChecked<RealtimeMeshType>(RealtimeMeshReference);
+			return CastChecked<RealtimeMeshType>(RealtimeMesh);
 		}
 		return nullptr;
 	}
+	
+	UFUNCTION()
+	void OnRep_RealtimeMesh(class URealtimeMesh *OldRealtimeMesh);
 
 public:
 	void GetStreamingRenderAssetInfo(FStreamingTextureLevelContext& LevelContext, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const
@@ -103,6 +106,7 @@ public:
 #endif
 	//~ End UPrimitiveComponent Interface
 
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
 	virtual void BindToEvents(URealtimeMesh* RealtimeMesh);
@@ -113,4 +117,6 @@ private:
 	virtual void HandleCollisionBodyUpdated(URealtimeMesh* RealtimeMesh, UBodySetup* BodySetup);
 
 	virtual void UpdateCollision();
+
+	friend class FRealtimeMeshDetailsCustomization;
 };

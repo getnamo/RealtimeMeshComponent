@@ -1,15 +1,14 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+﻿// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
 #include "RealtimeMeshGPUBuffer.h"
-#include "RealtimeMeshConfig.h"
 #include "ShaderParameters.h"
 #include "Components.h"
 #include "VertexFactory.h"
+#include "Core/RealtimeMeshStreamRange.h"
 
 
-struct FRealtimeMeshStreamRange;
 class FMaterial;
 class FSceneView;
 struct FMeshBatchElement;
@@ -86,17 +85,18 @@ namespace RealtimeMesh
 
 		virtual EPrimitiveType GetPrimitiveType() const { return PT_TriangleList; }
 
-		virtual FIndexBuffer& GetIndexBuffer(bool& bDepthOnly, bool& bMatrixInverted, TFunctionRef<void(const TSharedRef<FRenderResource>&)> ResourceSubmitter) const = 0;
+		
+		virtual FIndexBuffer& GetIndexBuffer(bool& bDepthOnly, bool& bMatrixInverted, struct FRealtimeMeshResourceReferenceList& ActiveResources) const = 0;
 
 		virtual FRealtimeMeshStreamRange GetValidRange() const = 0;
 		virtual bool IsValidStreamRange(const FRealtimeMeshStreamRange& StreamRange) const = 0;
 
-		virtual void Initialize(const TMap<FRealtimeMeshStreamKey, TSharedPtr<FRealtimeMeshGPUBuffer>>& Buffers) = 0;
+		virtual void Initialize(FRHICommandListBase& RHICmdList, const TMap<FRealtimeMeshStreamKey, TSharedPtr<FRealtimeMeshGPUBuffer>>& Buffers) = 0;
 
 		virtual FRHIUniformBuffer* GetUniformBuffer() const = 0;
 
-		virtual bool GatherVertexBufferResources(TFunctionRef<void(const TSharedRef<FRenderResource>&)> ResourceSubmitter) const = 0;
-
+		virtual bool GatherVertexBufferResources(struct FRealtimeMeshResourceReferenceList& ActiveResources) const = 0;
+		
 	protected:
 		static TSharedPtr<FRealtimeMeshGPUBuffer> FindBuffer(const FRealtimeMeshStreamProxyMap& Buffers, ERealtimeMeshStreamType StreamType, FName BufferName)
 		{
@@ -229,12 +229,12 @@ namespace RealtimeMesh
 		{
 			const TSharedPtr<FRealtimeMeshGPUBuffer> FoundBuffer = FindBuffer(Buffers, ERealtimeMeshStreamType::Index, BufferName);
 
-			if (!FoundBuffer.IsValid())
+			if (!FoundBuffer.IsValid() || !FoundBuffer->IsResourceInitialized() || !StaticCastSharedPtr<FRealtimeMeshIndexBuffer>(FoundBuffer)->IndexBufferRHI)
 			{
 				// If the buffer isn't optional, invalidate the result
-				bIsValid &= bIsOptional;
 				if (!bIsOptional)
 				{
+					bIsValid = false;
 					ValidRange = FInt32Range(0, 0);
 				}
 				return;
@@ -263,7 +263,7 @@ namespace RealtimeMesh
 			  , DepthOnlyIndexBuffer(nullptr)
 			  , ReversedIndexBuffer(nullptr)
 			  , ReversedDepthOnlyIndexBuffer(nullptr)
-			  , ValidRange(FRealtimeMeshStreamRange::Empty)
+			  , ValidRange(FRealtimeMeshStreamRange::Empty())
 			  , ColorStreamIndex(INDEX_NONE)
 		{
 		}
@@ -301,14 +301,14 @@ namespace RealtimeMesh
 
 		virtual EPrimitiveType GetPrimitiveType() const override { return PT_TriangleList; }
 
-		virtual FIndexBuffer& GetIndexBuffer(bool& bDepthOnly, bool& bMatrixInverted, TFunctionRef<void(const TSharedRef<FRenderResource>&)> ResourceSubmitter) const override;
+		virtual FIndexBuffer& GetIndexBuffer(bool& bDepthOnly, bool& bMatrixInverted, struct FRealtimeMeshResourceReferenceList& ActiveResources) const override;
 
 		virtual FRealtimeMeshStreamRange GetValidRange() const override { return ValidRange; }
 		virtual bool IsValidStreamRange(const FRealtimeMeshStreamRange& StreamRange) const override;
 
-		virtual void Initialize(const TMap<FRealtimeMeshStreamKey, TSharedPtr<FRealtimeMeshGPUBuffer>>& Buffers) override;
+		virtual void Initialize(FRHICommandListBase& RHICmdList, const TMap<FRealtimeMeshStreamKey, TSharedPtr<FRealtimeMeshGPUBuffer>>& Buffers) override;
 
-		virtual bool GatherVertexBufferResources(TFunctionRef<void(const TSharedRef<FRenderResource>&)> ResourceSubmitter) const override;
+		virtual bool GatherVertexBufferResources(struct FRealtimeMeshResourceReferenceList& ActiveResources) const override;
 
 		// FRenderResource interface.
 #if RMC_ENGINE_ABOVE_5_3

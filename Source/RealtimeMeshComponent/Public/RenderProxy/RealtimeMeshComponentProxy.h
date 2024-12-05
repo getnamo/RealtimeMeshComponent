@@ -1,4 +1,4 @@
-// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
@@ -19,14 +19,15 @@ namespace RealtimeMesh
 	private:
 		// THis is the proxy we're rendering
 		FRealtimeMeshProxyRef RealtimeMeshProxy;
+		TSharedPtr<uint8> MeshReferencingHandle;
 
 		// All the in use materials
-		TMap<int32, TTuple<FMaterialRenderProxy*, bool>> Materials;
+		FRealtimeMeshMaterialProxyMap MaterialMap;
 
 		// Reference all the in-use buffers so that as long as this proxy is around these buffers will be too. 
 		// This is meant only for statically drawn sections. Dynamically drawn sections can update safely in place.
 		// Static sections get new buffers on each update.
-		TArray<TSharedRef<FRenderResource>> InUseBuffers;
+		FRealtimeMeshResourceReferenceList StaticResources;
 
 		// Reference to the body setup for rendering.
 		UBodySetup* BodySetup;
@@ -42,6 +43,12 @@ namespace RealtimeMesh
 		FRealtimeMeshComponentSceneProxy(URealtimeMeshComponent* Component, const FRealtimeMeshProxyRef& InRealtimeMeshProxy);
 
 		virtual ~FRealtimeMeshComponentSceneProxy() override;
+
+#if RMC_ENGINE_ABOVE_5_4
+		virtual void CreateRenderThreadResources(FRHICommandListBase& RHICmdList) override;
+#else
+		virtual void CreateRenderThreadResources() override;
+#endif
 
 		virtual bool CanBeOccluded() const override;
 
@@ -82,8 +89,6 @@ namespace RealtimeMesh
 
 	protected:
 		SIZE_T GetAllocatedSize(void) const;
-
-		FMaterialRenderProxy* GetMaterialSlot(int32 MaterialSlotId) const;
 
 		int8 GetCurrentFirstLOD() const;
 

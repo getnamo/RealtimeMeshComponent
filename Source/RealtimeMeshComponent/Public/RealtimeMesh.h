@@ -1,10 +1,10 @@
-// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
 #include "RealtimeMeshCore.h"
 #include "Data/RealtimeMeshData.h"
-#include "RealtimeMeshCollision.h"
+#include "RealtimeMeshCollisionLibrary.h"
 #include "Interfaces/Interface_CollisionDataProvider.h"
 #if RMC_ENGINE_ABOVE_5_2
 #include "Tickable.h"
@@ -12,18 +12,10 @@
 #include "RealtimeMesh.generated.h"
 
 
-UCLASS(Blueprintable, Abstract, ClassGroup = Rendering, HideCategories = (Object, Activation, Cooking))
-class REALTIMEMESHCOMPONENT_API URealtimeMesh : public UObject, public IInterface_CollisionDataProvider
+UCLASS(BlueprintType, Blueprintable, ConversionRoot, Abstract, ClassGroup = Rendering, HideCategories = (Object, Activation, Cooking))
+class REALTIMEMESHCOMPONENT_API URealtimeMesh : public UObject
 {
 	GENERATED_UCLASS_BODY()
-private:
-	struct FRealtimeMeshCollisionUpdate
-	{
-		FRealtimeMeshTriMeshData TriMeshData;
-		int32 UpdateKey;
-		bool bFastCook;
-	};
-
 public:
 	DECLARE_EVENT_OneParam(URealtimeMesh, FBoundsChangedEvent, URealtimeMesh*);
 
@@ -43,7 +35,7 @@ public:
 
 protected:
 	void BroadcastBoundsChangedEvent();
-	void BroadcastRenderDataChangedEvent(bool bShouldRecreateProxies);
+	void BroadcastRenderDataChangedEvent(bool bShouldRecreateProxies, int32 CommandsVersion = INDEX_NONE);
 	void BroadcastCollisionBodyUpdatedEvent(UBodySetup* NewBodySetup);
 
 	void Initialize(const TSharedRef<RealtimeMesh::FRealtimeMeshSharedResources>& InSharedResources);
@@ -56,24 +48,26 @@ protected:
 	UPROPERTY()
 	TArray<FRealtimeMeshMaterialSlot> MaterialSlots;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TMap<FName, int32> SlotNameLookup;
 
-	UPROPERTY(Instanced)
+	UPROPERTY(Transient)
 	TObjectPtr<UBodySetup> BodySetup;
+	TArray<FRealtimeMeshCollisionMeshCookedUVData> UVData;
 
 	/* Collision data that is pending async cook */
-	UPROPERTY(Transient)
-	TObjectPtr<UBodySetup> PendingBodySetup;
+	//UPROPERTY(Transient)
+	//TObjectPtr<UBodySetup> PendingBodySetup;
 
 	/* Collision data to cook for any pending async cook */
-	TOptional<FRealtimeMeshCollisionUpdate> PendingCollisionUpdate;
+	//TOptional<FRealtimeMeshCollisionUpdate> PendingCollisionUpdate;
 
-	/* Counter for generating version identifier for collision updates */
-	int32 CollisionUpdateVersionCounter;
 
 	/* Currently applied collision version, used for ignoring old cooks in async */
 	int32 CurrentCollisionVersion;
+
+	/* Should we serialize the mesh data when we're saving in editor/package */
+	uint32 bShouldSerializeMeshData : 1;
 
 public:
 	/**
@@ -102,6 +96,15 @@ public:
 	 * @return The body setup associated with the RealtimeMesh.
 	 */
 	UBodySetup* GetBodySetup() const { return BodySetup; }
+
+	/**
+	 * Get the UV position for the supplied hit location.
+	 * 
+	 * @return The UV coordinate for the hit.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Components|RealtimeMesh")
+	bool CalcTexCoordAtLocation(const FVector& BodySpaceLocation, int32 ElementIndex, int32 FaceIndex, int32 UVChannel, FVector2D& UV) const;
+
 
 	/**
 	 * Reset the RealtimeMesh.
@@ -234,37 +237,43 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Components|RealtimeMesh")
 	UMaterialInterface* GetMaterial(int32 SlotIndex) const;
 
+	/**
+	 * Should we serialize the mesh data while we're serializing in editor/package?
+	 * @return Whether we should serialize the mesh data.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Components|RealtimeMesh")
+	bool ShouldSerializeMeshData() const { return bShouldSerializeMeshData; }
+
+	/**
+	 * Set whether we should serialize the mesh data while we're serializing in editor/package.
+	 * @param bNewShouldSerializeMeshData New value for whether we should serialize the mesh data.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Components|RealtimeMesh")
+	void SetShouldSerializeMeshData(bool bNewShouldSerializeMeshData) { bShouldSerializeMeshData = bNewShouldSerializeMeshData; }
+
 public:
 	//	Begin UObject interface
+	virtual UWorld* GetWorld() const override;
+	virtual bool IsSupportedForNetworking() const override { return true; }
 	virtual void PostInitProperties() override;
 	virtual void BeginDestroy() override;
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	//	End UObject interface
 
-	//	Begin IInterface_CollisionDataProvider interface
-	virtual bool GetPhysicsTriMeshData(struct FTriMeshCollisionData* CollisionData, bool InUseAllTriData) override;
-	virtual bool ContainsPhysicsTriMeshData(bool InUseAllTriData) const override;
-	virtual bool WantsNegXTriMesh() override { return false; }
-	virtual void GetMeshId(FString& OutMeshId) override { OutMeshId = GetName(); }
-	//	End IInterface_CollisionDataProvider interface
-
 protected:
 	virtual void HandleBoundsUpdated();
-	virtual void HandleMeshRenderingDataChanged(bool bShouldRecreateProxies);
-
-	virtual void ProcessEndOfFrameUpdates();
-
-	void MarkForEndOfFrameUpdate();
+	virtual void HandleRenderProxyRequiresUpdate();
 
 protected: // Collision
-	void InitiateCollisionUpdate(const TSharedRef<TPromise<ERealtimeMeshCollisionUpdateResult>>& Promise, const TSharedRef<FRealtimeMeshCollisionData>& CollisionUpdate,
-	                             bool bForceSyncUpdate);
-	void FinishPhysicsAsyncCook(bool bSuccess, TSharedRef<struct FRealtimeMeshCookAutoPromiseOnDestruction> Promise, UBodySetup* FinishedBodySetup, int32 UpdateKey);
 
+	/*void InitiateCollisionUpdate(const TSharedRef<TPromise<ERealtimeMeshCollisionUpdateResult>>& Promise,
+		const TSharedRef<FRealtimeMeshCollisionInfo>& NewCollisionInfo, bool bForceSyncUpdate);*/
+
+	ERealtimeMeshCollisionUpdateResult ApplyCollisionUpdate(FRealtimeMeshCollisionInfo&& InCollisionData, int32 NewCollisionKey);
 	
-	friend struct FRealtimeMeshEndOfFrameUpdateManager;
-	
+	friend class FRealtimeMeshDetailsCustomization;
+	friend class RealtimeMesh::FRealtimeMesh;
 };
 
 

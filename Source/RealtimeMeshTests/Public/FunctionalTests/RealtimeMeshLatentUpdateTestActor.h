@@ -1,4 +1,4 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+﻿// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
@@ -21,25 +21,18 @@ public:
 
 	UPROPERTY()
 	TObjectPtr<URealtimeMeshSimple> RealtimeMesh;
-
-	UPROPERTY()
-	FRealtimeMeshSectionKey StaticSectionKey;
 	
-	// Create a section group passing it our mesh data
 	UPROPERTY()
-	FRealtimeMeshSectionGroupKey GroupKey;
-
-	// Create both sections on the same mesh data
+	FRealtimeMeshSectionGroupKey GroupA;
+	
 	UPROPERTY()
-	FRealtimeMeshSectionKey SectionInGroupA;
-	UPROPERTY()
-	FRealtimeMeshSectionKey SectionInGroupB;
+	FRealtimeMeshSectionGroupKey GroupB;
 
 	
 	// Sets default values for this actor's properties
 	ARealtimeMeshLatentUpdateTestActor();
 
-	virtual void OnGenerateMesh_Implementation() override;
+	virtual void OnConstruction(const FTransform& Transform) override;
 
 	virtual void BeginPlay() override;
 };

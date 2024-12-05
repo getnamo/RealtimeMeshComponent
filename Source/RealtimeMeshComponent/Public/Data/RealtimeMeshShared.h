@@ -1,15 +1,16 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+﻿// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
 #include "RealtimeMeshCore.h"
-#include "RealtimeMeshConfig.h"
 #include "RealtimeMeshGuard.h"
-#include "Mesh/RealtimeMeshDataStream.h"
+#include "Core/RealtimeMeshKeys.h"
+#include "Core/RealtimeMeshDataStream.h"
+#include "Async/Async.h"
 
 struct FRealtimeMeshSimpleGeometry;
 struct FRealtimeMeshCollisionConfiguration;
-struct FRealtimeMeshCollisionData;
+struct FRealtimeMeshCollisionInfo;
 enum class ERealtimeMeshCollisionUpdateResult : uint8;
 
 namespace RealtimeMesh
@@ -17,52 +18,24 @@ namespace RealtimeMesh
 	// ReSharper disable CppExpressionWithoutSideEffects
 	struct FRealtimeMeshBounds
 	{
-	public:
-		DECLARE_DELEGATE(FOnChanged);
-
 	private:
 		TOptional<FBoxSphereBounds3f> UserSetBounds;
-		mutable TOptional<FBoxSphereBounds3f> CalculatedBounds;
-		mutable FRWLock Lock;
+		TOptional<FBoxSphereBounds3f> CalculatedBounds;
 
 	public:
 		bool HasUserSetBounds() const { return UserSetBounds.IsSet(); }
 		void SetUserSetBounds(const FBoxSphereBounds3f& InBounds) { UserSetBounds = InBounds; }
 		void ClearUserSetBounds() { UserSetBounds.Reset(); }
-		void ClearCachedValue() const { CalculatedBounds.Reset(); }
 
-		FBoxSphereBounds3f GetUserSetBounds() const
-		{
-			FReadScopeLock ScopeLock(Lock);
-			return UserSetBounds.GetValue();
-		}
+		bool HasComputedBounds() const { return CalculatedBounds.IsSet(); }
+		void SetComputedBounds(const FBoxSphereBounds3f& InBounds) { CalculatedBounds = InBounds; }
+		void ClearCachedValue() { CalculatedBounds.Reset(); }
 
-		template <typename BoundsCalculatorFunc>
-		FBoxSphereBounds3f GetBounds(BoundsCalculatorFunc BoundsCalculator) const
-		{
-			{
-				FReadScopeLock ScopeLock(Lock);
-				if (UserSetBounds.IsSet())
-				{
-					return UserSetBounds.GetValue();
-				}
+		bool HasBounds() const { return UserSetBounds.IsSet() || CalculatedBounds.IsSet(); }
+		const FBoxSphereBounds3f& GetBounds() const { check(HasBounds()); return UserSetBounds.IsSet()? UserSetBounds.GetValue() : CalculatedBounds.GetValue(); }
 
-				if (CalculatedBounds.IsSet())
-				{
-					return CalculatedBounds.GetValue();
-				}
-			}
-
-			{
-				FWriteScopeLock ScopeLock(Lock);
-				if (!CalculatedBounds.IsSet())
-				{
-					CalculatedBounds = BoundsCalculator();
-				}
-				return CalculatedBounds.GetValue();
-			}
-		}
-
+		TOptional<FBoxSphereBounds3f> Get() const { return UserSetBounds.IsSet() ? UserSetBounds : CalculatedBounds; }
+		
 		void Reset()
 		{
 			UserSetBounds.Reset();
@@ -84,9 +57,10 @@ namespace RealtimeMesh
 			}
 			return Ar;
 		}
-	};
 
+	};
 	// ReSharper restore CppExpressionWithoutSideEffects
+
 
 
 	enum class ERealtimeMeshChangeType
@@ -110,12 +84,14 @@ namespace RealtimeMesh
 	DECLARE_MULTICAST_DELEGATE_OneParam(FRealtimeMeshLODPropertyChangedEvent, const FRealtimeMeshLODKey&);
 
 	DECLARE_MULTICAST_DELEGATE(FRealtimeMeshPropertyChangedEvent);
-	DECLARE_MULTICAST_DELEGATE_OneParam(FRealtimeMeshRenderDataChangedEvent, bool);
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FRealtimeMeshRenderDataChangedEvent, bool, int32);
 
 
 	DECLARE_DELEGATE(FRealtimeMeshRequestEndOfFrameUpdateDelegate);
 	DECLARE_DELEGATE_ThreeParams(FRealtimeMeshCollisionUpdateDelegate, const TSharedRef<TPromise<ERealtimeMeshCollisionUpdateResult>>&,
-	                             const TSharedRef<FRealtimeMeshCollisionData>&, bool);
+	                             const TSharedRef<FRealtimeMeshCollisionInfo>&, bool);
+
+	DECLARE_MULTICAST_DELEGATE(FRealtimeMeshSimpleEvent);
 
 	class REALTIMEMESHCOMPONENT_API FRealtimeMeshSharedResources : public TSharedFromThis<FRealtimeMeshSharedResources>
 	{
@@ -126,28 +102,8 @@ namespace RealtimeMesh
 		FRealtimeMeshWeakPtr Owner;
 		FRealtimeMeshProxyWeakPtr Proxy;
 
-		FRealtimeMeshSectionChangedEvent SectionChangedEvent;
-		FRealtimeMeshSectionPropertyChangedEvent SectionConfigChangedEvent;
-		FRealtimeMeshSectionPropertyChangedEvent SectionStreamRangeChangedEvent;
-		FRealtimeMeshSectionPropertyChangedEvent SectionBoundsChangedEvent;
-
-		FRealtimeMeshStreamChangedEvent StreamChangedEvent;
-		FRealtimeMeshStreamPropertyChangedEvent StreamRangeChangedEvent;
-
-		FRealtimeMeshSectionGroupChangedEvent SectionGroupChangedEvent;
-		FRealtimeMeshSectionGroupPropertyChangedEvent SectionGroupInUseRangeChangedEvent;
-		FRealtimeMeshSectionGroupPropertyChangedEvent SectionGroupBoundsChangedEvent;
-
-		FRealtimeMeshLODChangedEvent LODChangedEvent;
-		FRealtimeMeshLODPropertyChangedEvent LODConfigChangedEvent;
-		FRealtimeMeshLODPropertyChangedEvent LODBoundsChangedEvent;
-
-		FRealtimeMeshRenderDataChangedEvent MeshRenderDataChangedEvent;
-		FRealtimeMeshPropertyChangedEvent MeshConfigChangedEvent;
-		FRealtimeMeshPropertyChangedEvent MeshBoundsChangedEvent;
-
-		FRealtimeMeshRequestEndOfFrameUpdateDelegate EndOfFrameRequestHandler;
-		FRealtimeMeshCollisionUpdateDelegate CollisionUpdateHandler;
+		FRealtimeMeshSimpleEvent OnRenderProxyRequiresUpdateEvent;
+		FRealtimeMeshSimpleEvent OnBoundsChangedEvent;
 
 	public:
 		virtual ~FRealtimeMeshSharedResources() = default;
@@ -195,8 +151,16 @@ namespace RealtimeMesh
 		}
 
 
+		FRealtimeMeshSimpleEvent& OnRenderProxyRequiresUpdate() { return OnRenderProxyRequiresUpdateEvent; }
+		FRealtimeMeshSimpleEvent& OnBoundsChanged() { return OnBoundsChangedEvent; }
+
+		
+		/*
 		FRealtimeMeshSectionChangedEvent& OnSectionChanged() { return SectionChangedEvent; }
-		void BroadcastSectionChanged(const FRealtimeMeshSectionKey& SectionKey, ERealtimeMeshChangeType Type) const { SectionChangedEvent.Broadcast(SectionKey, Type); }
+		void BroadcastSectionChanged(const FRealtimeMeshSectionKey& SectionKey, ERealtimeMeshChangeType Type) const
+		{
+			SectionChangedEvent.Broadcast(SectionKey, Type);
+		}
 
 		void BroadcastSectionChanged(const TSet<FRealtimeMeshSectionKey>& SectionKeys, ERealtimeMeshChangeType Type) const
 		{
@@ -299,18 +263,68 @@ namespace RealtimeMesh
 
 
 		FRealtimeMeshRenderDataChangedEvent& OnMeshRenderDataChanged() { return MeshRenderDataChangedEvent; }
-		void BroadcastMeshRenderDataChanged(bool bShouldRecreateProxies) const { MeshRenderDataChangedEvent.Broadcast(bShouldRecreateProxies); }
+		void BroadcastMeshRenderDataChanged(bool bShouldRecreateProxies, int32 CommandsVersion) const
+		{
+			if (IsInGameThread())
+			{
+				MeshRenderDataChangedEvent.Broadcast(bShouldRecreateProxies, CommandsVersion);
+			}
+			else
+			{
+				AsyncTask(ENamedThreads::GameThread, [ThisWeak = this->AsWeak(), bShouldRecreateProxies, CommandsVersion]()
+				{
+					if (const auto Pinned = ThisWeak.Pin())
+					{
+						Pinned->MeshRenderDataChangedEvent.Broadcast(bShouldRecreateProxies, CommandsVersion);
+					}
+				});
+			}
+		}
 
 		FRealtimeMeshPropertyChangedEvent& OnMeshConfigChanged() { return MeshConfigChangedEvent; }
-		void BroadcastMeshConfigChanged() const { MeshConfigChangedEvent.Broadcast(); }
+		void BroadcastMeshConfigChanged() const
+		{
+			if (IsInGameThread())
+			{
+				MeshConfigChangedEvent.Broadcast();
+			}
+			else
+			{
+				AsyncTask(ENamedThreads::GameThread, [ThisWeak = this->AsWeak()]()
+				{
+					if (const auto Pinned = ThisWeak.Pin())
+					{
+						Pinned->MeshConfigChangedEvent.Broadcast();
+					}
+				});
+			}
+		}
 
 		FRealtimeMeshPropertyChangedEvent& OnMeshBoundsChanged() { return MeshBoundsChangedEvent; }
-		void BroadcastMeshBoundsChanged() const { MeshBoundsChangedEvent.Broadcast(); }
+		void BroadcastMeshBoundsChanged() const
+		{
+			if (IsInGameThread())
+			{
+				MeshBoundsChangedEvent.Broadcast();
+			}
+			else
+			{
+				AsyncTask(ENamedThreads::GameThread, [ThisWeak = this->AsWeak()]()
+				{
+					if (const auto Pinned = ThisWeak.Pin())
+					{
+						Pinned->MeshBoundsChangedEvent.Broadcast();
+					}
+				});
+			}
+		}
 
 		FRealtimeMeshRequestEndOfFrameUpdateDelegate& GetEndOfFrameRequestHandler() { return EndOfFrameRequestHandler; }
-		FRealtimeMeshCollisionUpdateDelegate& GetCollisionUpdateHandler() { return CollisionUpdateHandler; }
+		FRealtimeMeshCollisionUpdateDelegate& GetCollisionUpdateHandler() { return CollisionUpdateHandler; }*/
 
 	public:
+		virtual FRealtimeMeshUpdateStateRef CreateUpdateState() const;
+		
 		virtual FRealtimeMeshVertexFactoryRef CreateVertexFactory() const;
 		virtual FRealtimeMeshSectionProxyRef CreateSectionProxy(const FRealtimeMeshSectionKey& InKey) const;
 		virtual FRealtimeMeshSectionGroupProxyRef CreateSectionGroupProxy(const FRealtimeMeshSectionGroupKey& InKey) const;
@@ -319,7 +333,7 @@ namespace RealtimeMesh
 
 		virtual FRealtimeMeshSectionRef CreateSection(const FRealtimeMeshSectionKey& InKey) const;
 		virtual FRealtimeMeshSectionGroupRef CreateSectionGroup(const FRealtimeMeshSectionGroupKey& InKey) const;
-		virtual FRealtimeMeshLODDataRef CreateLOD(const FRealtimeMeshLODKey& InKey) const;
+		virtual FRealtimeMeshLODRef CreateLOD(const FRealtimeMeshLODKey& InKey) const;
 
 		virtual FRealtimeMeshRef CreateRealtimeMesh() const;
 

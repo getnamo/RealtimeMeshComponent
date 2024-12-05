@@ -1,9 +1,8 @@
-// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Mesh/RealtimeMeshAlgo.h"
 #include "Modules/ModuleManager.h"
 
 /**
@@ -34,4 +33,4 @@ public:
 	}
 };
 
-REALTIMEMESHCOMPONENT_API DECLARE_LOG_CATEGORY_EXTERN(RealtimeMeshLog, Warning, All);
+REALTIMEMESHCOMPONENT_API DECLARE_LOG_CATEGORY_EXTERN(LogRealtimeMesh, Warning, All);

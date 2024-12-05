@@ -1,4 +1,4 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+﻿// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 /*=============================================================================
 	RealtimeMeshVertexFactory.cpp: Local vertex factory implementation
@@ -12,9 +12,10 @@
 #include "SpeedTreeWind.h"
 #include "Rendering/ColorVertexBuffer.h"
 #include "MeshMaterialShader.h"
-#include "RealtimeMeshConfig.h"
+#include "RealtimeMeshComponentModule.h"
 #include "SceneInterface.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
+#include "RenderProxy/RealtimeMeshProxyShared.h"
 
 #if RMC_ENGINE_ABOVE_5_2
 #include "MaterialDomain.h"
@@ -222,8 +223,8 @@ namespace RealtimeMesh
 		return TUniformBufferRef<FLocalVertexFactoryUniformShaderParameters>::CreateUniformBufferImmediate(UniformParameters, UniformBuffer_MultiFrame);
 	}
 
-	FIndexBuffer& FRealtimeMeshLocalVertexFactory::GetIndexBuffer(bool& bDepthOnly, bool& bMatrixInverted,
-	                                                              TFunctionRef<void(const TSharedRef<FRenderResource>&)> ResourceSubmitter) const
+
+	FIndexBuffer& FRealtimeMeshLocalVertexFactory::GetIndexBuffer(bool& bDepthOnly, bool& bMatrixInverted, struct FRealtimeMeshResourceReferenceList& ActiveResources) const
 	{
 		if (bDepthOnly)
 		{
@@ -231,14 +232,14 @@ namespace RealtimeMesh
 			{
 				if (const auto ReversedDepth = ReversedDepthOnlyIndexBuffer.Pin())
 				{
-					ResourceSubmitter(ReversedDepth.ToSharedRef());
+					ActiveResources.AddResource(ReversedDepth);
 					return *ReversedDepth.Get();
 				}
 			}
 
 			if (const auto DepthOnly = DepthOnlyIndexBuffer.Pin())
 			{
-				ResourceSubmitter(DepthOnly.ToSharedRef());
+				ActiveResources.AddResource(DepthOnly);
 				bMatrixInverted = false;
 				return *DepthOnly.Get();
 			}
@@ -248,7 +249,7 @@ namespace RealtimeMesh
 		{
 			if (const auto Reversed = ReversedIndexBuffer.Pin())
 			{
-				ResourceSubmitter(Reversed.ToSharedRef());
+				ActiveResources.AddResource(Reversed);
 				bDepthOnly = false;
 				return *Reversed.Get();
 			}
@@ -256,19 +257,20 @@ namespace RealtimeMesh
 
 		const auto Normal = IndexBuffer.Pin();
 		check(Normal.IsValid());
-		ResourceSubmitter(Normal.ToSharedRef());
+		ActiveResources.AddResource(Normal);
 
 		bMatrixInverted = false;
 		bDepthOnly = false;
 		return *Normal.Get();
 	}
 
+	
 	bool FRealtimeMeshLocalVertexFactory::IsValidStreamRange(const FRealtimeMeshStreamRange& StreamRange) const
 	{
 		return ValidRange.Contains(StreamRange);
 	}
 
-	void FRealtimeMeshLocalVertexFactory::Initialize(const TMap<FRealtimeMeshStreamKey, TSharedPtr<FRealtimeMeshGPUBuffer>>& Buffers)
+	void FRealtimeMeshLocalVertexFactory::Initialize(FRHICommandListBase& RHICmdList, const TMap<FRealtimeMeshStreamKey, TSharedPtr<FRealtimeMeshGPUBuffer>>& Buffers)
 	{
 		FDataType DataType;
 
@@ -334,6 +336,7 @@ namespace RealtimeMesh
 
 		// Bind all index buffers
 		BindIndexBuffer(bIsValid, ValidIndexRange, IndexBuffer, Buffers, FRealtimeMeshStreams::TrianglesStreamName);
+		bIsValid &= IndexBuffer != nullptr;
 		//BindIndexBuffer(bIsValid, ValidIndexRange, ReversedIndexBuffer, Buffers, FRealtimeMeshStreamNames::ReversedTrianglesStreamName, true);
 		//BindIndexBuffer(bIsValid, ValidIndexRange, DepthOnlyIndexBuffer, Buffers, FRealtimeMeshStreamNames::DepthOnlyTrianglesStreamName, true);
 		//BindIndexBuffer(bIsValid, ValidIndexRange, ReversedDepthOnlyIndexBuffer, Buffers, FRealtimeMeshStreamNames::ReversedDepthOnlyTrianglesStreamName, true);
@@ -348,7 +351,7 @@ namespace RealtimeMesh
 			ValidRange = FRealtimeMeshStreamRange(ValidVertexRange, ValidIndexRange);
 			
 #if RMC_ENGINE_ABOVE_5_3
-			InitResource(FRHICommandListImmediate::Get());
+			InitResource(RHICmdList);
 #else
 			InitResource();
 #endif
@@ -361,7 +364,7 @@ namespace RealtimeMesh
 		}
 	}
 
-	bool FRealtimeMeshLocalVertexFactory::GatherVertexBufferResources(TFunctionRef<void(const TSharedRef<FRenderResource>&)> ResourceSubmitter) const
+	bool FRealtimeMeshLocalVertexFactory::GatherVertexBufferResources(FRealtimeMeshResourceReferenceList& ActiveResources) const
 	{
 		TArray<TSharedPtr<FRealtimeMeshVertexBuffer>> TempBuffers;
 		for (const auto& Buffer : InUseVertexBuffers)
@@ -375,9 +378,9 @@ namespace RealtimeMesh
 		}
 		for (const auto& Buffer : TempBuffers)
 		{
-			ResourceSubmitter(Buffer.ToSharedRef());
+			ActiveResources.AddResource(Buffer);
 		}
-		return true;
+		return true;		
 	}
 
 

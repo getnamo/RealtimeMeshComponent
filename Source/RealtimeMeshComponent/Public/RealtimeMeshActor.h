@@ -1,10 +1,11 @@
-// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "RealtimeMeshComponent.h"
+#include "Mesh/RealtimeMeshBlueprintMeshBuilder.h"
 #include "RealtimeMeshActor.generated.h"
 
 UCLASS(ConversionRoot, ComponentWrapperClass, ClassGroup=RealtimeMesh, meta = (ChildCanTick))
@@ -18,9 +19,33 @@ protected:
 	TObjectPtr<class URealtimeMeshComponent> RealtimeMeshComponent;
 
 public:
+
+	UFUNCTION(BlueprintCallable, Category="RealtimeMesh")
+	URealtimeMeshStream* MakeStream(const FRealtimeMeshStreamKey& StreamKey, ERealtimeMeshSimpleStreamType StreamType, int32 NumElements);
+	
+	UFUNCTION(BlueprintCallable, Category="RealtimeMesh")
+	URealtimeMeshStreamSet* MakeStreamSet();
+	
+	UFUNCTION(BlueprintCallable, Category="RealtimeMesh")
+	URealtimeMeshLocalBuilder* MakeMeshBuilder(ERealtimeMeshSimpleStreamConfig WantedTangents = ERealtimeMeshSimpleStreamConfig::Normal,
+		ERealtimeMeshSimpleStreamConfig WantedTexCoords = ERealtimeMeshSimpleStreamConfig::Normal,
+		bool bWants32BitIndices = false,
+		ERealtimeMeshSimpleStreamConfig WantedPolyGroupType = ERealtimeMeshSimpleStreamConfig::None,
+		bool bWantsColors = true, int32 WantedTexCoordChannels = 1, bool bKeepExistingData = true);
+
+
+	/**
+	 * If true, the then OnGenerateMesh will get called, and you should move
+	 * your mesh generation logic there, instead of the construction script.
+	 * This helps improve editor performace by not running generation in
+	 * construction which fires every frame when dragging an actor in the editor.
+	 */
+	UPROPERTY(Category = "RealtimeMeshActor", EditAnywhere, BlueprintReadWrite)
+	bool bDeferGeneration = false;
+	
 	/**
 	 * If true, the RealtimeMeshComponent will be "Frozen" in its current state, and automatic rebuilding
-	 * will be disabled. However the DynamicMesh can still be modified by explicitly-called functions/etc.
+	 * will be disabled. However the RealtimeMesh can still be modified by explicitly-called functions/etc.
 	 */
 	UPROPERTY(Category = "RealtimeMeshActor", EditAnywhere, BlueprintReadWrite)
 	bool bFrozen = false;
@@ -33,12 +58,12 @@ public:
 	ARealtimeMeshActor();
 	virtual ~ARealtimeMeshActor() override;
 
-	UFUNCTION(Category = DynamicMeshActor, BlueprintCallable)
+	UFUNCTION(Category = RealtimeMeshActor, BlueprintCallable)
 	URealtimeMeshComponent* GetRealtimeMeshComponent() const { return RealtimeMeshComponent; }
 
 	/**
 	 * This event will be fired to notify the BP that the generated Mesh should
-	 * be rebuilt. GeneratedDynamicMeshActor BP subclasses should rebuild their 
+	 * be rebuilt. GeneratedRealtimeMeshActor BP subclasses should rebuild their 
 	 * meshes on this event, instead of doing so directly from the Construction Script.
 	 */
 	UFUNCTION(BlueprintNativeEvent, CallInEditor, Category = "Events")
@@ -57,6 +82,7 @@ public:
 
 public:
 	//~ Begin UObject/AActor Interface
+	virtual void BeginPlay() override;
 	virtual void PostLoad() override;
 	virtual void PostActorCreated() override;
 	virtual void OnConstruction(const FTransform& Transform) override;

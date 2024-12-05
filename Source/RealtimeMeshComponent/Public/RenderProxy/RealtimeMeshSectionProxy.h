@@ -1,10 +1,12 @@
-// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #pragma once
 
 #include "RealtimeMeshCore.h"
-#include "RealtimeMeshConfig.h"
 #include "RealtimeMeshProxyShared.h"
+#include "Core/RealtimeMeshKeys.h"
+#include "Core/RealtimeMeshSectionConfig.h"
+#include "Core/RealtimeMeshStreamRange.h"
 
 namespace RealtimeMesh
 {
@@ -16,36 +18,28 @@ namespace RealtimeMesh
 		FRealtimeMeshSectionConfig Config;
 		FRealtimeMeshStreamRange StreamRange;
 		FRealtimeMeshDrawMask DrawMask;
-		uint32 bIsStateDirty : 1;
+
+		bool bRangeChanged;
 
 	public:
 		FRealtimeMeshSectionProxy(const FRealtimeMeshSharedResourcesRef& InSharedResources, const FRealtimeMeshSectionKey InKey);
 		virtual ~FRealtimeMeshSectionProxy();
 
-		FRealtimeMeshSectionKey GetKey() const { return Key; }
+		const FRealtimeMeshSectionKey& GetKey() const { return Key; }
 		const FRealtimeMeshSectionConfig& GetConfig() const { return Config; }
+		const FRealtimeMeshStreamRange& GetStreamRange() const { return StreamRange; }
 		int32 GetMaterialSlot() const { return Config.MaterialSlot; }
 		FRealtimeMeshDrawMask GetDrawMask() const { return DrawMask; }
-		FRealtimeMeshStreamRange GetStreamRange() const { return StreamRange; }
 
+		bool IsRangeDirty() const { return bRangeChanged; }
+		
 		virtual void UpdateConfig(const FRealtimeMeshSectionConfig& NewConfig);
-		virtual void UpdateStreamRange(const FRealtimeMeshStreamRange& InStreamRange);
-
-		virtual bool CreateMeshBatch(
-			const FRealtimeMeshBatchCreationParams& Params,
-			const FRealtimeMeshVertexFactoryRef& VertexFactory,
-			const FMaterialRenderProxy* Material,
-			bool bIsWireframe,
-			bool bSupportsDithering
-#if RHI_RAYTRACING
-			, const FRayTracingGeometry* RayTracingGeometry
-#endif
-		) const;
-
-		virtual bool UpdateCachedState(bool bShouldForceUpdate, FRealtimeMeshSectionGroupProxy& ParentGroup);
+		virtual void UpdateStreamRange(const FRealtimeMeshStreamRange& NewStreamRange);
+		
+		virtual bool InitializeMeshBatch(FMeshBatch& MeshBatch, FRHIUniformBuffer* PrimitiveUniformBuffer) const;
+		
+		
+		virtual void UpdateCachedState(FRealtimeMeshSectionGroupProxy& ParentGroup);
 		virtual void Reset();
-
-	protected:
-		void MarkStateDirty();
 	};
 }

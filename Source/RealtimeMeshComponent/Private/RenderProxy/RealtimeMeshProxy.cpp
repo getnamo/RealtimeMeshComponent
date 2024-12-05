@@ -1,7 +1,9 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 #include "RenderProxy/RealtimeMeshProxy.h"
 
+#include "RealtimeMeshComponentModule.h"
+#include "RealtimeMeshSceneViewExtension.h"
 #include "Data/RealtimeMeshShared.h"
 #include "RenderProxy/RealtimeMeshLODProxy.h"
 
@@ -9,8 +11,14 @@ namespace RealtimeMesh
 {
 	FRealtimeMeshProxy::FRealtimeMeshProxy(const FRealtimeMeshSharedResourcesRef& InSharedResources)
 		: SharedResources(InSharedResources)
-		  , ValidLODRange(TRange<int8>::Empty())
-		  , bIsStateDirty(true)
+		, ActiveLODMask(false, REALTIME_MESH_MAX_LODS)
+		, ScreenPercentageNextLODMask(false, REALTIME_MESH_MAX_LODS)
+		, ActiveStaticLODMask(false, REALTIME_MESH_MAX_LODS)
+		, ActiveDynamicLODMask(false, REALTIME_MESH_MAX_LODS)
+		, ReferencingHandle(MakeShared<uint8>(0xFF))
+#if UE_ENABLE_DEBUG_DRAWING
+		, CollisionTraceFlag(CTF_UseSimpleAndComplex)
+#endif
 	{
 	}
 
@@ -20,6 +28,12 @@ namespace RealtimeMesh
 		// This is so that all the resources can be safely freed correctly.
 		check(IsInRenderingThread());
 		Reset();
+
+		while (!CommandQueue.IsEmpty())
+		{
+			auto Entry = CommandQueue.Dequeue();
+			Entry->ThreadState->FinalizeRenderThread(ERealtimeMeshProxyUpdateStatus::NoProxy);
+		}	
 	}
 
 	ERHIFeatureLevel::Type FRealtimeMeshProxy::GetRHIFeatureLevel() const
@@ -30,7 +44,37 @@ namespace RealtimeMesh
 
 	TRange<float> FRealtimeMeshProxy::GetScreenSizeRangeForLOD(const FRealtimeMeshLODKey& LODKey) const
 	{
-		return ScreenSizeRangeByLOD.IsValidIndex(LODKey) ? ScreenSizeRangeByLOD[LODKey] : TRange<float>(0.0f, 0.0f);
+		const int32 LODIndex = LODKey.Index();
+
+		// Special case for LOD 0 as there's no higher lod to get the max screen size from
+		if (LODIndex == 0)
+		{
+			return TRange<float>(GetLOD(LODIndex)->GetScreenSize(), TNumericLimits<float>::Max());
+		}
+		
+		// Find previous active lod
+#if RMC_ENGINE_ABOVE_5_3
+		const int32 NextActive = ScreenPercentageNextLODMask.FindFrom(true, REALTIME_MESH_MAX_LOD_INDEX - (LODIndex - 1));
+#else
+		int32 NextActive = INDEX_NONE;
+
+		for (int32 Index = REALTIME_MESH_MAX_LOD_INDEX - (LODIndex - 1); Index < REALTIME_MESH_MAX_LODS; Index++)
+		{
+			if (ScreenPercentageNextLODMask[Index])
+			{
+				NextActive = Index;
+				break;
+			}
+		}		
+#endif
+		
+		// If there is no valid lod higher than us, then we just use max value for the upper end
+		if (NextActive == INDEX_NONE)
+		{
+			return TRange<float>(GetLOD(LODIndex)->GetScreenSize(), TNumericLimits<float>::Max());
+		}		
+		
+		return TRange<float>(GetLOD(LODIndex)->GetScreenSize(), GetLOD(REALTIME_MESH_MAX_LOD_INDEX - NextActive)->GetScreenSize());
 	}
 
 	void FRealtimeMeshProxy::SetDistanceField(FRealtimeMeshDistanceField&& InDistanceField)
@@ -43,13 +87,13 @@ namespace RealtimeMesh
 	bool FRealtimeMeshProxy::HasDistanceFieldData() const
 	{
 #if RMC_ENGINE_ABOVE_5_2
-			return DistanceField.IsValid() && DistanceField->IsValid();
+		return DistanceField.IsValid() && DistanceField->IsValid();
 #else
 		return DistanceField.IsValid();
 #endif
 	}
 
-	void FRealtimeMeshProxy::SetNaniteResources(TSharedPtr<IRealtimeMeshNaniteResources> InNaniteResources)
+	void FRealtimeMeshProxy::SetNaniteResources(const TSharedPtr<IRealtimeMeshNaniteResources>& InNaniteResources)
 	{
 		check(IsInRenderingThread());
 
@@ -83,7 +127,6 @@ namespace RealtimeMesh
 		}
 
 		LODs[LODKey] = SharedResources->CreateLODProxy(LODKey);
-		MarkStateDirty();
 	}
 
 	void FRealtimeMeshProxy::RemoveLOD(const FRealtimeMeshLODKey& LODKey)
@@ -105,89 +148,93 @@ namespace RealtimeMesh
 					break;
 				}
 			}
-
-			MarkStateDirty();
 		}
 	}
 
-	void FRealtimeMeshProxy::CreateMeshBatches(int32 LODIndex, const FRealtimeMeshBatchCreationParams& Params, const TMap<int32, TTuple<FMaterialRenderProxy*, bool>>& Materials,
-	                                           const FMaterialRenderProxy* WireframeMaterial, ERealtimeMeshSectionDrawType DrawType, ERealtimeMeshBatchCreationFlags InclusionFlags) const
+#if UE_ENABLE_DEBUG_DRAWING
+	void FRealtimeMeshProxy::SetCollisionRenderData(const FKAggregateGeom& InAggGeom, ECollisionTraceFlag InCollisionTraceFlag, const FCollisionResponseContainer& InCollisionResponse)
 	{
-		const auto& LOD = LODs[LODIndex];
-		LOD->CreateMeshBatches(Params, Materials, WireframeMaterial, DrawType, InclusionFlags);
+		bHasCollisionData = true;
+		CachedAggGeom = InAggGeom;
+		CollisionTraceFlag = InCollisionTraceFlag;
+		CollisionResponse = InCollisionResponse;
+			
+		//bOwnerIsNull = ParentBaseComponent->GetOwner() == nullptr;
+	}
+#endif
+
+	void FRealtimeMeshProxy::EnqueueCommandBatch(TArray<FRealtimeMeshProxyUpdateBuilder::TaskFunctionType>&& InTasks, const TSharedPtr<FRealtimeMeshCommandBatchIntermediateFuture>& ThreadState)
+	{
+		CommandQueue.Enqueue(FCommandBatch { MoveTemp(InTasks), ThreadState });
 	}
 
-	bool FRealtimeMeshProxy::UpdatedCachedState(bool bShouldForceUpdate)
+	void FRealtimeMeshProxy::ProcessCommands(FRHICommandListBase& RHICmdList)
 	{
+		FScopeLock Lock(&CommandQueueLock);
+		
+		bool bHadAnyUpdates = false;
+		while (!CommandQueue.IsEmpty())
+		{
+			auto Entry = CommandQueue.Dequeue();
+			for (const auto& Task : Entry->Tasks)
+			{
+				Task(RHICmdList, *this);
+			}
+			Entry->ThreadState->FinalizeRenderThread(ERealtimeMeshProxyUpdateStatus::Updated);
+			bHadAnyUpdates = true;
+		}
+
+		if (bHadAnyUpdates)
+		{
+			UpdatedCachedState(RHICmdList);
+		}
+	}
+
+	void FRealtimeMeshProxy::UpdatedCachedState(FRHICommandListBase& RHICmdList)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FRealtimeMeshProxy::UpdatedCachedState);
+		
 		// Handle all LOD updates next
 		for (const auto& LOD : LODs)
 		{
-			bIsStateDirty |= LOD->UpdateCachedState(bShouldForceUpdate);
+			LOD->UpdateCachedState(RHICmdList);
 		}
-
-		if (!bIsStateDirty && !bShouldForceUpdate)
-		{
-			return false;
-		}
-
-		FRealtimeMeshDrawMask NewMask;
-		TArray<TRange<float>> NewScreenSizeRangeByLOD;
-		TRange<int8> NewValidLODRange = TRange<int8>::Empty();
-		TRangeBound<float> MaxScreenSize = TNumericLimits<float>::Max();
+		
+		DrawMask = FRealtimeMeshDrawMask();
+		ActiveLODMask = FRealtimeMeshLODMask(false, REALTIME_MESH_MAX_LODS);
+		ScreenPercentageNextLODMask = FRealtimeMeshLODMask(false, REALTIME_MESH_MAX_LODS);
+		ActiveStaticLODMask = FRealtimeMeshLODMask(false, REALTIME_MESH_MAX_LODS);
+		ActiveDynamicLODMask = FRealtimeMeshLODMask(false, REALTIME_MESH_MAX_LODS);
 
 		for (int32 LODIndex = 0; LODIndex < LODs.Num(); LODIndex++)
 		{
 			const auto& LOD = LODs[LODIndex];
 
 			const auto LODDrawMask = LOD->GetDrawMask();
-			NewMask |= LODDrawMask;
+			DrawMask |= LODDrawMask;
 
-			TRangeBound<float> NewScreenSize = MaxScreenSize;
 			if (LODDrawMask.HasAnyFlags())
 			{
-				NewScreenSize = LOD->GetScreenSize();
-				if (NewScreenSize.GetValue() > MaxScreenSize.GetValue())
-				{
-					NewScreenSize = MaxScreenSize;
-				}
-
-				if (!NewValidLODRange.IsEmpty())
-				{
-					NewValidLODRange = TRange<int8>(NewValidLODRange.GetLowerBound(), TRangeBound<int8>::Inclusive(LODIndex));
-				}
-				else
-				{
-					NewValidLODRange = TRange<int8>(TRangeBound<int8>::Inclusive(LODIndex), TRangeBound<int8>::Inclusive(LODIndex));
-				}
+				ActiveLODMask[LODIndex] = true;
+				ScreenPercentageNextLODMask[REALTIME_MESH_MAX_LOD_INDEX - LODIndex] = true;
+				ActiveStaticLODMask[LODIndex] = LOD->GetDrawMask().ShouldRenderStaticPath();
+				ActiveDynamicLODMask[LODIndex] = LOD->GetDrawMask().ShouldRenderDynamicPath();
 			}
-			NewScreenSizeRangeByLOD.Add(TRange<float>(NewScreenSize, MaxScreenSize));
-			MaxScreenSize = NewScreenSize;
 		}
-
-		const bool bStateChanged = DrawMask != NewMask || ScreenSizeRangeByLOD != NewScreenSizeRangeByLOD || ValidLODRange != NewValidLODRange;
-
-		DrawMask = NewMask;
-		ScreenSizeRangeByLOD = MoveTemp(NewScreenSizeRangeByLOD);
-		ValidLODRange = NewValidLODRange;
-		bIsStateDirty = false;
-
-		check(!DrawMask.HasAnyFlags() || !ValidLODRange.IsEmpty());
-
-		return bStateChanged;
-	}
-
-	void FRealtimeMeshProxy::MarkStateDirty()
-	{
-		bIsStateDirty = true;
+		
+		check(!DrawMask.HasAnyFlags() || ActiveLODMask.CountSetBits() > 0);
 	}
 
 	void FRealtimeMeshProxy::Reset()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FRealtimeMeshProxy::Reset);
+		
 		LODs.Empty();
 
 		DrawMask = FRealtimeMeshDrawMask();
-		ValidLODRange = TRange<int8>::Empty();
-		ScreenSizeRangeByLOD.Empty();
-		bIsStateDirty = false;
+		ActiveLODMask.SetRange(0, REALTIME_MESH_MAX_LODS, false);
+		ScreenPercentageNextLODMask.SetRange(0, REALTIME_MESH_MAX_LODS, false);
+		ActiveStaticLODMask.SetRange(0, REALTIME_MESH_MAX_LODS, false);
+		ActiveDynamicLODMask.SetRange(0, REALTIME_MESH_MAX_LODS, false);
 	}
 }

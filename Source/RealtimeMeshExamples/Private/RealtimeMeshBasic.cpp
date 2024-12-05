@@ -1,4 +1,4 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+﻿// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 
 #include "RealtimeMeshBasic.h"
@@ -11,8 +11,10 @@ ARealtimeMeshBasic::ARealtimeMeshBasic()
 	PrimaryActorTick.bCanEverTick = false;
 }
 
-void ARealtimeMeshBasic::OnGenerateMesh_Implementation()
+void ARealtimeMeshBasic::OnConstruction(const FTransform& Transform)
 {
+	Super::OnConstruction(Transform);
+	
 	// Initialize to a simple mesh, this behaves the most like a ProceduralMeshComponent
 	// Where you can set the mesh data and forget about it.
 	URealtimeMeshSimple* RealtimeMesh = GetRealtimeMeshComponent()->InitializeRealtimeMesh<URealtimeMeshSimple>();
@@ -53,12 +55,12 @@ void ARealtimeMeshBasic::OnGenerateMesh_Implementation()
 		.SetTexCoord(FVector2f(1.0f, 0.0f));
 
 	// Add our triangle, placing the vertices in counter clockwise order
-	Builder.AddTriangle(V0, V1, V2, 0);
+	Builder.AddTriangle(V0, V1, V2, 0/* This is the polygroup index */);
 
 	// For this example we'll add the triangle again using reverse order so we can see the backface.
 	// Usually you wouldn't want to do this, but in this case of a single triangle,
 	// without it you'll only be able to see from a single side
-	Builder.AddTriangle(V2, V1, V0, 1);
+	Builder.AddTriangle(V2, V1, V0, 1/* This is the polygroup index */);
 	
 	// Setup the two material slots
 	RealtimeMesh->SetupMaterialSlot(0, "PrimaryMaterial");
@@ -80,10 +82,8 @@ void ARealtimeMeshBasic::OnGenerateMesh_Implementation()
 	RealtimeMesh->CreateSectionGroup(GroupKey, StreamSet);
 
 	// Update the configuration of both the polygroup sections.
-	RealtimeMesh->UpdateSectionConfig(PolyGroup0SectionKey, FRealtimeMeshSectionConfig(ERealtimeMeshSectionDrawType::Static, 0));
-	RealtimeMesh->UpdateSectionConfig(PolyGroup1SectionKey, FRealtimeMeshSectionConfig(ERealtimeMeshSectionDrawType::Static, 1));
-	
-	Super::OnGenerateMesh_Implementation();
+	RealtimeMesh->UpdateSectionConfig(PolyGroup0SectionKey, FRealtimeMeshSectionConfig(0));
+	RealtimeMesh->UpdateSectionConfig(PolyGroup1SectionKey, FRealtimeMeshSectionConfig(1));
 }
 
 

@@ -1,11 +1,11 @@
-﻿// Copyright TriAxis Games, L.L.C. All Rights Reserved.
+﻿// Copyright (c) 2015-2024 TriAxis Games, L.L.C. All Rights Reserved.
 
 
 #include "Mesh/RealtimeMeshAlgo.h"
 
-#include "Mesh/RealtimeMeshBuilder.h"
-#include "Mesh/RealtimeMeshDataStream.h"
-#include "Mesh/RealtimeMeshDataTypes.h"
+#include "Core/RealtimeMeshBuilder.h"
+#include "Core/RealtimeMeshDataStream.h"
+#include "Core/RealtimeMeshDataTypes.h"
 
 using namespace RealtimeMesh;
 
