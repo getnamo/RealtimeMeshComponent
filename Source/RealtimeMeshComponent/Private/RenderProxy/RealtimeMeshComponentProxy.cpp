@@ -369,7 +369,7 @@ namespace RealtimeMesh
 		SelfShadowBias = DistanceFieldSelfShadowBias;
 	}
 
-	void FRealtimeMeshComponentSceneProxy::GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const
+	/*void FRealtimeMeshComponentSceneProxy::GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const
 	{
 		check(InstanceLocalToPrimitiveTransforms.IsEmpty());
 
@@ -377,7 +377,7 @@ namespace RealtimeMesh
 		{
 			InstanceLocalToPrimitiveTransforms.Add(FRenderTransform::Identity);
 		}
-	}
+	}*/
 
 	bool FRealtimeMeshComponentSceneProxy::HasDistanceFieldRepresentation() const
 	{
