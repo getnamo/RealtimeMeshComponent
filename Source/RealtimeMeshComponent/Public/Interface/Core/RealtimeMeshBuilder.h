@@ -6,6 +6,7 @@
 #include "RealtimeMeshDataTypes.h"
 #include "RealtimeMeshDataStream.h"
 #include "Templates/Invoke.h"
+#include <type_traits>
 //#include "Traits/IsVoidType.h"
 
 #if RMC_ENGINE_ABOVE_5_4
@@ -24,7 +25,7 @@ namespace RealtimeMesh
 		using ElementType = typename FRealtimeMeshBufferTypeTraits<Type>::ElementType;
 		using QualifiedType = InType;
 		using QualifiedElementType = typename TCopyQualifiersFromTo<InType, ElementType>::Type;
-		static constexpr bool IsConst = TIsConst<InType>::Value;
+		static constexpr bool IsConst = std::is_const_v<InType>;
 		static constexpr bool IsVoid = std::is_same_v<Type, void>;
 		static constexpr int32 NumElements = FRealtimeMeshBufferTypeTraits<Type>::NumElements;
 

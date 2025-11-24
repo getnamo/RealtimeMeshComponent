@@ -438,10 +438,12 @@ namespace RealtimeMesh
 #endif // RMC_ENGINE_ABOVE_5_4
 
 #if RHI_RAYTRACING
-	void FRealtimeMeshComponentSceneProxy::GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context,
-	                                                                     TArray<struct FRayTracingInstance>& OutRayTracingInstances)
+
+	void FRealtimeMeshComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingInstanceCollector& Collector)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_RealtimeMeshComponentSceneProxy_GetDynamicRayTracingInstances);
+
+		//disabled for 5.7
 
 		/*const uint32 LODIndex = FMath::Max(GetLOD(Context.ReferenceView), (int32)GetCurrentFirstLODIdx_RenderThread());
 

@@ -83,7 +83,7 @@ namespace RealtimeMesh
 		virtual bool IsRayTracingStaticRelevant() const override { return true; }
 
 		/** Gathers dynamic ray tracing instances from this proxy. */
-		virtual void GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context, TArray<struct FRayTracingInstance>& OutRayTracingInstances) override;
+		virtual void GetDynamicRayTracingInstances(class FRayTracingInstanceCollector& Collector) override;
 
 #endif // RHI_RAYTRACING
 
